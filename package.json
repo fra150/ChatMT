@@ -1,0 +1,15 @@
+{
+  "name": "chatmt",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ChatMT - reflective and regenerative AI prototype. Phase 2: colour preference engine.",
+  "type": "module",
+  "scripts": {
+    "test": "node tests/run-tests.mjs",
+    "serve": "python -m http.server 8000"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "UNLICENSED"
+}

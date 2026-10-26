@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ChatMT — colour preference prototype</title>
+    <link rel="stylesheet" href="css/styles.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#palette-heading">Skip to the palette</a>
+
+    <header class="app-header">
+      <h1>ChatMT</h1>
+      <p class="tagline">Reflective and regenerative AI — Phase 2 prototype: the colour preference engine.</p>
+      <p class="disclaimer">
+        This version is a <strong>rule-based system with a persistent memory</strong>. It compares a colour you pick
+        with the written standard codes, measures the perceptual distance, and remembers your choice on this device
+        only. It does not train a neural network, it does not use a language model, and it sends nothing to any server.
+      </p>
+    </header>
+
+    <div id="app-status" class="status" role="alert" hidden></div>
+
+    <main class="layout">
+      <section class="panel" aria-labelledby="palette-heading">
+        <h2 id="palette-heading"><span class="step">1</span> Choose a colour</h2>
+
+        <h3>Colours with a standard code</h3>
+        <p class="hint">The nine colours written in <code>standards/usage-of-colours.json</code>.</p>
+        <div id="palette-covered" class="palette"></div>
+
+        <h3>Colours with no standard code</h3>
+        <p class="hint">
+          These colours are deliberately left out of the standard. ChatMT must report that it has no rule for them,
+          instead of guessing one.
+        </p>
+        <div id="palette-uncovered" class="palette"></div>
+      </section>
+
+      <section class="panel" aria-labelledby="selection-heading">
+        <h2 id="selection-heading"><span class="step">2</span> Your selection</h2>
+        <div id="selection" class="selection" aria-live="polite">
+          <p class="hint">No colour selected yet.</p>
+        </div>
+
+        <label class="consent" for="consent">
+          <input type="checkbox" id="consent" />
+          <span>
+            I agree to store my colour preferences in this browser (<code>localStorage</code>). Nothing leaves this
+            device, and I can delete everything with the button below.
+          </span>
+        </label>
+        <p id="consent-note" class="hint" role="status"></p>
+
+        <div class="row">
+          <button id="clear-memory" type="button" class="danger">Delete all stored data</button>
+        </div>
+      </section>
+
+      <section class="panel panel-answer" aria-labelledby="answer-heading">
+        <h2 id="answer-heading"><span class="step">3</span> ChatMT answers</h2>
+        <div id="answer" aria-live="polite">
+          <p class="hint">Pick a colour to see how ChatMT answers and why.</p>
+        </div>
+
+        <div id="clarification" class="clarification" hidden>
+          <label for="clarification-text" id="clarification-label">Your answer</label>
+          <textarea id="clarification-text" rows="3" placeholder="Write why you chose this colour…"></textarea>
+          <button id="clarification-send" type="button">Send answer</button>
+          <p class="hint">
+            The standard code asks this question before accepting the colour. Your answer is stored with the preference.
+          </p>
+        </div>
+
+        <div id="correction" class="correction" hidden>
+          <h3>Something wrong with this answer?</h3>
+          <label for="correction-outcome">What should the standard say about this colour?</label>
+          <select id="correction-outcome">
+            <option value="accepted">It should be accepted</option>
+            <option value="question">It should be questioned</option>
+            <option value="no-standard">There should be no rule for it</option>
+          </select>
+          <label for="correction-note">Note (optional)</label>
+          <input id="correction-note" type="text" maxlength="200" />
+          <button id="correction-record" type="button">Record correction</button>
+          <p class="hint">
+            A correction is stored as a separate record (memory category D). It never changes the standard code by
+            itself: the standard can only be changed by an explicit, documented decision.
+          </p>
+        </div>
+      </section>
+
+      <section class="panel" aria-labelledby="matches-heading">
+        <h2 id="matches-heading"><span class="step">4</span> Matches, contradictions and uncertainty</h2>
+        <div id="matches">
+          <p class="hint">Nothing to show yet.</p>
+        </div>
+      </section>
+
+      <section class="panel" aria-labelledby="memory-heading">
+        <h2 id="memory-heading"><span class="step">5</span> Memory</h2>
+        <div id="memory-status" class="memory-status"></div>
+        <ul id="memory-list" class="memory-list"></ul>
+      </section>
+
+      <section class="panel" aria-labelledby="why-heading">
+        <h2 id="why-heading"><span class="step">6</span> Why this answer</h2>
+        <div id="why">
+          <p class="hint">The data used, the rules applied and the uncertainty are listed here, in short form.</p>
+        </div>
+      </section>
+
+      <section class="panel" aria-labelledby="modalities-heading">
+        <h2 id="modalities-heading"><span class="step">7</span> Input modalities</h2>
+        <ul class="modalities">
+          <li><span class="badge badge-ok">implemented</span> <strong>Colour from the palette</strong> — compared with the standard codes, measured with CIEDE2000, stored in the local memory.</li>
+          <li><span class="badge badge-todo">not implemented</span> <strong>Text</strong> — no language model and no text analysis is integrated in this version (planned as Phase 4).</li>
+          <li><span class="badge badge-todo">not implemented</span> <strong>Images</strong> — no computer-vision model is integrated (planned as Phase 5).</li>
+          <li><span class="badge badge-todo">not implemented</span> <strong>Audio and voice</strong> — no speech model is integrated (planned as Phase 5).</li>
+        </ul>
+      </section>
+    </main>
+
+    <footer class="app-footer">
+      <p>
+        The measurement is a CIEDE2000 distance in CIELAB. It is not a statement about your taste: two colours can be
+        very close to each other without you liking both.
+      </p>
+      <p>Created by Francesco Bulla. Phase 2 prototype — see <code>docs/architettura.md</code> and <code>docs/test.md</code>.</p>
+    </footer>
+
+    <script type="module" src="js/app.js"></script>
+  </body>
+</html>
