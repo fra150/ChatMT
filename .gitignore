@@ -1,0 +1,3 @@
+# Personal diary: it lives one level above this repository (Chatmt/diario.md), so git never
+# sees it anyway. The entry is here so that a copy of it can never be committed by mistake.
+diario.md
