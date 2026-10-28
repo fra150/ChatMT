@@ -200,6 +200,79 @@ export class MemoryStore {
   }
 
   /**
+   * Store a record of any declared category. Used by the backend for the friendliness
+   * standing (category `interaction`) and for the assessment of a reason (category
+   * `knowledge`); the same consent rule applies as everywhere else.
+   *
+   * @param {{category: string, content: object, origin: string, confidence?: number, ttlMs?: number|null, confirmation?: string, consent: boolean}} input
+   */
+  addRecord({
+    category,
+    content,
+    origin,
+    confidence = 1,
+    ttlMs = null,
+    confirmation = CONFIRMATION.CONFIRMED,
+    consent
+  }) {
+    const allowed = Object.values(CATEGORIES);
+    if (!allowed.includes(category)) {
+      throw new TypeError(`Unknown memory category ${JSON.stringify(category)}. Allowed: ${allowed.join(', ')}.`);
+    }
+    if (content === null || typeof content !== 'object' || Array.isArray(content)) {
+      throw new TypeError('A record needs an object as its content.');
+    }
+    if (typeof origin !== 'string' || origin.trim() === '') {
+      throw new TypeError('A record needs a non-empty origin.');
+    }
+    const record = this.#createRecord({
+      category,
+      content,
+      origin,
+      confidence,
+      ttlMs,
+      confirmation,
+      consent
+    });
+    const records = this.#read();
+    records.push(record);
+    this.#write(records);
+    return record;
+  }
+
+  /**
+   * The most recent valid record of a category, optionally of one content kind.
+   * @param {{category: string, kind?: string|null}} input
+   * @returns {object|null}
+   */
+  latestRecord({ category, kind = null } = {}) {
+    const records = this.list({ category });
+    for (let index = records.length - 1; index >= 0; index -= 1) {
+      const record = records[index];
+      if (kind === null || record.content?.kind === kind) return record;
+    }
+    return null;
+  }
+
+  /**
+   * Merge fields into the content of an existing record, keeping its id and creation date.
+   * @param {string} id
+   * @param {object} patch
+   */
+  updateContent(id, patch) {
+    if (patch === null || typeof patch !== 'object' || Array.isArray(patch)) {
+      throw new TypeError('updateContent needs an object of fields.');
+    }
+    const records = this.#read();
+    const record = records.find((entry) => entry.id === id);
+    if (!record) throw new RecordNotFoundError(id);
+    record.content = { ...record.content, ...patch };
+    record.updated_at = this.now();
+    this.#write(records);
+    return record;
+  }
+
+  /**
    * Update a stored preference, keeping its id and creation date.
    * @param {string} id
    * @param {{hex?: string, name?: string|null, reason?: string|null, confirmation?: string}} [changes]

@@ -350,3 +350,20 @@ L'architettura, le interfacce e le decisioni tecniche sono in `docs/architettura
 Prossima fase possibile: **FASE 3**, allargare gli standard e rivedere le regole di incertezza
 (vale a dire dare al sistema più materiale su cui riflettere), oppure **FASE 4**, il sistema
 conversazionale, che richiede un modello linguistico.
+
+---
+
+## 11. Stato dopo il backend (28 ottobre 2026)
+
+Il backend richiesto dal creatore è stato aggiunto senza modificare il frontend:
+
+- regole per la ragione personale/cogente su rosso e giallo, con profilo `friendly` /
+  `not_friendly`, displeasure e spiegazione differita;
+- suggerimenti di sfondi tendenti ai cinque colori, ridotti per il profilo non friendly;
+- crop, ridimensionamento, rotazione e conversione png/jpeg/bmp;
+- API HTTP, memoria su file per utente, consenso obbligatorio, classificatore LLM opzionale.
+
+Risultati misurati: **87 test automatici superati** (41 esistenti + 2 sulla memoria + 44 nei nuovi file), **47 controlli
+nel browser rieseguiti** sul frontend invariato. Dettagli e limiti in `docs/backend-api.md` e
+`docs/test.md`. La chiamata reale al provider LLM non è stata eseguita: non era disponibile una
+chiave. Il frontend non è ancora collegato alle API.

@@ -1,3 +1,13 @@
 # Personal diary: it lives one level above this repository (Chatmt/diario.md), so git never
 # sees it anyway. The entry is here so that a copy of it can never be committed by mistake.
 diario.md
+
+# Installed dependencies (jimp for the backend image operations).
+node_modules/
+
+# Backend data: one JSON profile per user. Local data, never committed.
+data/
+
+# Local secrets: never commit an API key.
+.env
+.env.*

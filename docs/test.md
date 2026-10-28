@@ -1,9 +1,11 @@
-# ChatMT — Test e risultati misurati (Fase 2)
+# ChatMT — Test e risultati misurati (Fase 2 e backend)
 
 Ogni numero in questo documento è stato prodotto eseguendo il comando indicato su questa macchina.
 Nessun risultato è stimato. Dove una metrica non è stata misurata, è scritto che non è stata misurata.
 
-- **Data delle esecuzioni:** 26 ottobre 2026
+- **Data delle esecuzioni:** 26 ottobre 2026 (frontend) e 28 ottobre 2026 (backend)
+- **Ultima esecuzione completa:** 28 ottobre 2026 — **87/87** test automatici, **47/47**
+  controlli nel browser, `npm start` verificato su una porta temporanea
 - **Ambiente:** Windows, Node.js v26.5.0, Python 3.13, Chrome 156, Docker 29.9.2
 
 ---
@@ -12,15 +14,16 @@ Nessun risultato è stimato. Dove una metrica non è stata misurata, è scritto 
 
 | Comando | Cosa serve | Cosa verifica |
 |---|---|---|
-| `node tests/run-tests.mjs` (o `npm test`) | solo Node.js, nessuna dipendenza | la logica: spazio colore, CIEDE2000, bande, memoria, riflessione, risposte |
+| `node tests/run-tests.mjs` (o `npm test`) | Node.js e `jimp` (unica dipendenza) | la logica e il backend: spazio colore, CIEDE2000, bande, memoria, riflessione, risposte, regole della ragione, profilo, suggerimenti, immagini, API HTTP |
+| `npm start` + richieste HTTP | Node.js e `jimp` | il server reale avviato con lo script di produzione: health, interazioni, memoria su disco, trasformazioni |
 | `python -m http.server 8000` + `node tests/browser-checks.mjs http://127.0.0.1:8000/frontend/index.html` | server HTTP in esecuzione e Chrome installato | l'interfaccia reale: 47 controlli sul DOM di un browser vero |
-| `docker build -t chatmt .` + `docker run --rm -p 8080:80 chatmt` | Docker | che il container serva l'applicazione funzionante |
+| `docker build -t chatmt .` + `docker run --rm -p 8080:80 chatmt` | Docker | che il container serva il frontend statico (non avvia Node) |
 
-I tre livelli sono complementari: i test unitari non vedono l'interfaccia, e i controlli nel browser non verificano i dati di riferimento della formula CIEDE2000.
+I livelli sono complementari: i test automatici non vedono l'interfaccia, e i controlli nel browser non verificano i dati di riferimento della formula CIEDE2000 né il backend.
 
 ---
 
-## 2. Test unitari (`tests/run-tests.mjs`)
+## 2. Test automatici (`tests/run-tests.mjs`)
 
 ### 2.1 `tests/color-engine.test.mjs`
 
@@ -57,6 +60,8 @@ sono copiati dal file ufficiale in formato testo pubblicato dagli autori
 | cancellazione totale | `clear()` restituisce il numero di record rimossi e la voce sparisce dall'archivio |
 | scadenza | un record con `expires_at` nel passato non viene più usato come contesto, ma è ancora presente con `includeExpired` |
 | input non valido | colore non valido, esito di correzione vuoto, archivio illeggibile → errori espliciti |
+| record generici | `addRecord` richiede consenso, una categoria dichiarata e un contenuto oggetto; `latestRecord` filtra per categoria e tipo |
+| aggiornamento del contenuto | `updateContent` unisce i campi, conserva id e `created_at` e aggiorna `updated_at` |
 
 Nota: nei test il tempo e gli identificativi sono iniettati (`now`, `idFactory`), quindi nessun test dipende dalla data reale né da un UUID generato.
 
@@ -84,14 +89,63 @@ Nota: nei test il tempo e gli identificativi sono iniettati (`now`, `idFactory`)
 | assenza di segnaposto | nessun `undefined` o `NaN` finisce nel testo della risposta |
 | tutti i colori della tavolozza | 15 colori producono tutti una risposta completa senza errori |
 
+### 2.4 `tests/reason-policy.test.mjs` (14 test)
+
+| Test | Cosa dimostra |
+|---|---|
+| standard dei significati | cinque colori incoraggiati, rosso e giallo interrogati, limiti 5/2 |
+| colori senza significato | magenta e purple sono dichiarati senza significato, non interpretati |
+| spiegazione del bias | contiene "danger or royalty" e "anger or determination" |
+| ragione personale | "mi piace e basta", colore preferito, nessun motivo, gusto personale → `personal` |
+| ragione cogente | significato, marca, pubblico, contrasto, contesto di design → `cogent` |
+| negazione | "non mi piace solo perché..." non viene contata come ragione personale |
+| ragione ambigua o assente | resta `needs_review`; una ragione assente non è trattata come personale |
+| transizioni del profilo | personale → `not_friendly` e 2 suggerimenti; cogente → `friendly`, 5 suggerimenti e accento sbloccato |
+| consegna una sola volta | la displeasure e la spiegazione compaiono alla prima interazione successiva e non si ripetono |
+| profilo danneggiato | un `not_friendly` con `allow_questioned_colours` forzato non sblocca gli accenti |
+
+### 2.5 `tests/design-suggestions.test.mjs` (11 test)
+
+| Test | Cosa dimostra |
+|---|---|
+| profilo friendly | 5 suggerimenti, tutti composti solo dai cinque colori, con CSS e SVG |
+| determinismo | lo stesso input produce esattamente lo stesso output |
+| profilo not friendly | 2 suggerimenti, dettaglio breve, nota di assistenza ridotta, nessun accento |
+| ragione cogente | il quinto suggerimento porta un accento rosso/giallo e almeno due colori incoraggiati |
+| accento coerente | l'accento segue il colore della ragione cogente, non quello del design |
+| tipi di design | flyer, poster, social post, banner e background mantengono le proprie dimensioni |
+| validazione | tipo sconosciuto, oggetto troppo lungo e campi non testuali sono rifiutati |
+| operazioni immagine | crop, resize con proporzioni, rotazione a quarti di giro, formati png/jpeg/bmp e limiti |
+
+### 2.6 `tests/backend.test.mjs` (19 test)
+
+| Test | Cosa dimostra |
+|---|---|
+| health e standard | standard caricati, LLM non configurato, palette e significati esposti |
+| interazione verde | profilo friendly, 5 suggerimenti, preferenza scritta su disco |
+| rosso senza ragione | domanda posta, nessuna scrittura, profilo invariato |
+| ragione personale | profilo `not_friendly`, 2 suggerimenti, tre record (preferenza, profilo, valutazione) |
+| consegna differita | alla interazione successiva arrivano displeasure e spiegazione, una sola volta |
+| persistenza | una seconda istanza del server sullo stesso archivio ritrova il profilo |
+| ragione cogente | tono friendly, accento rosso/giallo sbloccato |
+| ragione ambigua | nessuna scrittura e nessun profilo inventato |
+| LLM simulato | viene usato solo per la ragione ambigua; il fallimento e una confidenza sotto 0.5 lasciano `needs_review` |
+| suggerimenti HTTP | 2 per il profilo ridotto, 5 per quello esteso, tipo non valido → 400 |
+| immagini | crop, resize, rotate, PNG/JPEG/BMP in uscita e JPEG in ingresso |
+| errori immagine | crop fuori dai limiti, immagine non decodificabile, GIF rifiutata, formato e operazione non validi |
+| memoria | consenso obbligatorio, preferenza, correzione, eliminazione, cancellazione totale |
+| routing e validazione | 404, 405, userId non valido, colore fuori tavolozza, JSON non valido, ragione troppo lunga |
+| separazione utenti | il profilo di un utente non compare per un altro |
+| LLM (unità) | richiesta OpenAI-compatible, JSON stretta, risposte malformate, errori e assenza di chiave |
+
 ### Risultato dell'esecuzione
 
 ```
 node tests/run-tests.mjs
-tests 41   pass 41   fail 0   duration_ms 213
+tests 87   pass 87   fail 0   duration_ms 1050
 ```
 
-41 test superati, 0 falliti. Sono inclusi i 34 confronti CIEDE2000 di riferimento, ciascuno verificato con tolleranza 1e-4.
+87 test superati, 0 falliti. Sono inclusi i 34 confronti CIEDE2000 di riferimento, ciascuno verificato con tolleranza 1e-4. I 44 test nei tre nuovi file sono i 14 di `reason-policy`, gli 11 di `design-suggestions` e i 19 di `backend`; altri 2 test in `memory.test.mjs` coprono i metodi generici usati dal backend.
 
 **Un risultato non ovvio emerso dai test** e conservato come caso di regressione: il colore
 `lime` (`#00FF00`) senza standard risulta più vicino a **yellow** (23.40) che a **green**
@@ -104,7 +158,8 @@ va perso.
 ## 3. Controlli dell'interfaccia (`tests/browser-checks.mjs`)
 
 47 controlli eseguiti su un Chrome reale pilotato via DevTools Protocol, con asserzioni sul DOM
-dopo ogni azione. Verificano, nell'ordine:
+dopo ogni azione. **Rieseguiti il 28 ottobre 2026 dopo l'aggiunta del backend,** con lo stesso
+risultato: il frontend non è stato modificato. Verificano, nell'ordine:
 
 1. la tavolozza mostra 9 colori coperti da uno standard e 6 non coperti, senza errori all'avvio;
 2. selezionando `green` la risposta cita il codice `colour-green`, dichiara l'accettazione, mostra la rappresentazione strutturata e **non offre alcuna memorizzazione senza consenso**;
@@ -132,7 +187,27 @@ non confermata. Il pulsante ora lo dichiara in entrambi i casi, e il controllo c
 
 ---
 
-## 4. Verifica del container Docker
+## 4. Backend HTTP (28 ottobre 2026)
+
+Oltre ai test dentro `node --test`, il server è stato avviato con lo stesso comando di
+produzione (`node backend/server.js`) su una porta e una cartella dati temporanee, e interrogato
+con `curl`. I 19 test di `tests/backend.test.mjs` fanno la stessa cosa su una porta scelta dal
+sistema e con un archivio temporaneo, quindi la verifica è ripetibile senza servizi esterni.
+
+| Verifica eseguita a mano | Risultato |
+|---|---|
+| `GET /api/health` | `status: ok`, 9 regole di usage-of-colours, significati v1.0.0, LLM non configurato |
+| `POST /api/interactions` con rosso e ragione personale | `verdict: personal`, profilo `not_friendly`, limite 2, 2 suggerimenti, tre identificativi salvati |
+| seconda `POST /api/interactions` con violet e senza consenso | due messaggi (`personal-reason-displeasure`, `reduced-assistance-explanation`), profilo ancora `not_friendly`, 2 suggerimenti, nessuna nuova scrittura |
+| avvio con `CHATMT_DATA_DIR` temporanea | log: server in ascolto, LLM non configurato, cartella dati dichiarata |
+
+La chiamata reale al provider LLM **non è stata eseguita**: non era disponibile una chiave in
+questa sessione. Il percorso ibrido è verificato con un classificatore simulato (risposta valida
+e fallimento), non contro il servizio esterno.
+
+---
+
+## 5. Verifica del container Docker
 
 ```
 docker build -t chatmt:verify .          -> immagine costruita
@@ -148,9 +223,11 @@ docker run -d --name chatmt-verify -p 8180:80 chatmt:verify
 | healthcheck del container | `healthy` |
 | 47 controlli nel browser sull'applicazione servita dal container (`http://127.0.0.1:8180/frontend/index.html`) | 47/47 superati |
 
+Il container serve solo il frontend statico: **non avvia il backend Node** e non espone le API.
+
 ---
 
-## 5. Latenza misurata
+## 6. Latenza misurata
 
 Misurata in Node.js v26.5.0, media su molte ripetizioni, con una preferenza già memorizzata:
 
@@ -167,23 +244,28 @@ Non è stata misurata l'allocazione di memoria né l'uso di CPU.
 
 ---
 
-## 6. Metriche richieste dal brief (§8): stato
+## 7. Metriche richieste dal brief (§8): stato
 
 | Metrica | Stato |
 |---|---|
-| Accuratezza delle operazioni deterministiche | misurata: 34/34 coppie CIEDE2000 entro 1e-4; conversioni sRGB→CIELAB entro 0.05; 41/41 test superati |
-| Precisione e richiamo su classificazioni con etichette di riferimento | **non misurate**: non esiste un insieme etichettato di riferimento. Sarebbe un lavoro a sé, con dati raccolti da persone |
+| Accuratezza delle operazioni deterministiche | misurata: 34/34 coppie CIEDE2000 entro 1e-4; conversioni sRGB→CIELAB entro 0.05; 87/87 test superati |
+| Precisione e richiamo su classificazioni con etichette di riferimento | **non misurate**: non esiste un insieme etichettato di ragioni personali/cogenti. Le regole sono verificate su casi scritti a mano, non come percentuale |
+| Operazioni immagine | verificate su un'immagine reale: crop, resize con proporzioni, rotazione, conversione png/jpeg/bmp, limiti e rifiuti |
+| Qualità dei suggerimenti grafici | **non misurata**: non sono stati valutati da designer né su un insieme di prova |
 | Qualità del recupero della memoria | verificata su casi funzionali (recupero, aggiornamento, scadenza, separazione tra utenti), **non** come percentuale su un insieme di prova |
 | Tasso di risposte non supportate dalle informazioni disponibili | verificato per costruzione: un colore non coperto produce "non coperto" e incertezza alta, e non può essere memorizzato come accettato. Non è stato misurato su un campione casuale, perché la tavolozza è chiusa e ogni caso è coperto da un test |
-| Latenza | misurata (§5) |
+| Latenza | misurata (§6) per il motore; **non misurata** per le API sotto carico |
 | Consumo di risorse | **non misurato** |
 | Percentuale di correzioni risolte correttamente | **non applicabile**: in questa fase nessuna correzione viene risolta automaticamente, quindi non esiste una percentuale da misurare |
 
 ---
 
-## 7. Cosa questi risultati non dicono
+## 8. Cosa questi risultati non dicono
 
 - Non dicono che ChatMT risponda meglio di altri sistemi: **non è stato eseguito alcun confronto**. Il §9 del brief richiede benchmark riproducibili, confronti equi e documentazione dei limiti prima di qualsiasi affermazione di superiorità.
 - Non dicono nulla sulla qualità del giudizio sui colori: il sistema misura distanze, non preferenze.
 - Non dicono che l'interfaccia sia accessibile: non è stata verificata con strumenti di accessibilità né con uno screen reader.
 - Non dicono che i comportamenti siano corretti su altri browser: i controlli sono stati eseguiti solo su Chrome.
+- Non dicono che il giudizio personale/cogente sia accurato su ragioni reali: non esiste un insieme etichettato, e le soglie sono una convenzione dichiarata.
+- Non dicono che il provider LLM funzioni: è stato usato un endpoint simulato, non una chiave reale.
+- Non dicono che il backend sia sicuro da esporre: non ha autenticazione, HTTPS, rate limiting né autorizzazione per profilo.

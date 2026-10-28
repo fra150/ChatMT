@@ -205,6 +205,63 @@ test('invalid input is refused instead of being stored', () => {
   assert.equal(store.count(), 0);
 });
 
+test('generic records keep the consent rule and can be found by category and kind', () => {
+  const { store } = createTestStore();
+  assert.throws(
+    () => store.addRecord({ category: CATEGORIES.INTERACTION, content: { kind: 'x' }, origin: 'test' }),
+    ConsentRequiredError
+  );
+  assert.throws(
+    () => store.addRecord({ category: 'not-a-category', content: { kind: 'x' }, origin: 'test', consent: true }),
+    TypeError
+  );
+  assert.throws(
+    () => store.addRecord({ category: CATEGORIES.INTERACTION, content: null, origin: 'test', consent: true }),
+    TypeError
+  );
+  assert.equal(store.count(), 0);
+
+  const first = store.addRecord({
+    category: CATEGORIES.INTERACTION,
+    content: { kind: 'friendliness_standing', level: 'friendly' },
+    origin: 'test',
+    consent: true
+  });
+  store.addRecord({
+    category: CATEGORIES.KNOWLEDGE,
+    content: { kind: 'colour_reason_assessment', verdict: 'personal' },
+    origin: 'test',
+    consent: true
+  });
+
+  assert.equal(store.latestRecord({ category: CATEGORIES.INTERACTION, kind: 'friendliness_standing' }).id, first.id);
+  assert.equal(store.latestRecord({ category: CATEGORIES.INTERACTION, kind: 'missing' }), null);
+  assert.equal(store.latestRecord({ category: CATEGORIES.PREFERENCE }), null);
+});
+
+test('updateContent merges fields and keeps the identity of the record', () => {
+  const { store, advance } = createTestStore();
+  const record = store.addRecord({
+    category: CATEGORIES.INTERACTION,
+    content: { kind: 'friendliness_standing', level: 'friendly', pending: { displeasure: false } },
+    origin: 'test',
+    consent: true
+  });
+
+  advance(5000);
+  const updated = store.updateContent(record.id, { level: 'not_friendly', pending: { displeasure: true } });
+
+  assert.equal(updated.id, record.id);
+  assert.equal(updated.created_at, record.created_at);
+  assert.equal(updated.updated_at, '2026-10-26T10:00:05.000Z');
+  assert.deepEqual(updated.content, {
+    kind: 'friendliness_standing',
+    level: 'not_friendly',
+    pending: { displeasure: true }
+  });
+  assert.throws(() => store.updateContent('missing', { level: 'friendly' }), RecordNotFoundError);
+});
+
 test('unreadable storage raises an error instead of looking empty', () => {
   const adapter = createVolatileAdapter();
   adapter.setItem('chatmt.memory.user-a', '{not json');

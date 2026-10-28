@@ -1,8 +1,12 @@
-# ChatMT — Architettura (Fase 2: motore delle preferenze cromatiche)
+# ChatMT — Architettura (Fase 2 e backend)
 
-- **Stato:** implementata e verificata (41 test unitari + 47 controlli nel browser)
-- **Data:** 26 ottobre 2026
-- **Ambito:** confronto di un colore scelto dalla tavolozza con i codici standard, memoria delle preferenze, correzioni
+- **Stato:** implementata e verificata (87 test automatici + 47 controlli nel browser)
+- **Data:** 26 ottobre 2026 (fase 2), 28 ottobre 2026 (backend)
+- **Ambito:** confronto di un colore scelto dalla tavolozza con i codici standard, memoria delle preferenze e delle correzioni, giudizio della ragione per rosso/giallo, profilo friendly/not_friendly, suggerimenti grafici, operazioni immagine
+
+> Il §1 descrive la fase 2, che resta valida e non è stata riscritta. Il backend aggiunge i
+> pezzi del §8 e sostituisce la decisione "nessun backend" del §4, che valeva per quella fase.
+> L'interfaccia continua a usare `localStorage`: il collegamento alle API non è stato fatto.
 
 ---
 
@@ -122,8 +126,8 @@ Il magazzino non conosce il browser: riceve un `adapter` con `getItem`, `setItem
 
 | Decisione | Motivo | Alternativa scartata |
 |---|---|---|
-| HTML + CSS + JavaScript vanilla, nessuna dipendenza, nessun passo di build | il creatore conosce HTML e CSS; il primo modulo è aritmetica deterministica; il §6 del brief chiede componenti semplici e verificabili | framework frontend, che avrebbe aggiunto dipendenze e un passo di build senza risolvere alcun problema di questa fase |
-| Nessun backend | non serve a questa fase: la memoria locale basta. Un backend diventa necessario solo per la memoria condivisa, un modello linguistico via API, immagini e audio | server Python fin dall'inizio, che avrebbe aggiunto codice non verificabile in questa fase |
+| HTML + CSS + JavaScript vanilla **per il frontend**, nessuna dipendenza, nessun passo di build | il creatore conosce HTML e CSS; il primo modulo è aritmetica deterministica; il §6 del brief chiede componenti semplici e verificabili | framework frontend, che avrebbe aggiunto dipendenze e un passo di build senza risolvere alcun problema di questa fase |
+| Nessun backend **in fase 2** | non serviva a quella fase: la memoria locale bastava. Un backend diventa necessario per la memoria condivisa, un modello linguistico via API, immagini e audio | server Python fin dall'inizio, che avrebbe aggiunto codice non verificabile in quella fase. **Superata dalla fase backend: vedi §8** |
 | Gli standard stanno in un file JSON letto con `fetch` | il file resta modificabile a mano senza toccare il codice, e potrà essere letto anche da un backend futuro | incorporare gli standard nel JavaScript dell'interfaccia, che avrebbe imposto di duplicare i dati |
 | L'applicazione va servita via HTTP | i moduli ES e `fetch` non funzionano da `file://`; è un vincolo del browser, non una scelta | aprire `index.html` con doppio clic, che mostra un messaggio di errore con l'istruzione da eseguire |
 | Ogni nome di colore è ancorato al valore CSS omonimo | è un valore pubblico e verificabile; evita di scegliere a caso, per esempio, cosa sia "green" (`#008000`, non `#00FF00`) | valori inventati dal progetto |
@@ -145,8 +149,8 @@ I punti di innesto sono già definiti, così le fasi successive non dovranno ris
 - **Testo** — un Text Engine dovrà produrre lo stesso input accettato da `reflect()` (un tipo nuovo in `INPUT_TYPES` con le sue caratteristiche misurate) e nuovi standard nel formato di `standards/`. Richiede un modello linguistico: API o modello locale.
 - **Immagini** — un Image Engine dovrà estrarre un colore dominante o caratteristiche confrontabili con gli standard, e dichiarare l'incertezza del modello usato.
 - **Audio** — un Audio Engine dovrà trascrivere e collegare il testo al contesto; il tono della voce non dovrà essere presentato come prova certa dello stato emotivo.
-- **Memoria** — le categorie `conversational`, `knowledge` e `interaction` sono già previste nello schema; andranno scritte quando esisterà un contenuto da conservare.
-- **Backend** — necessario quando la memoria dovrà essere condivisa tra dispositivi o quando servirà una chiave API che non può stare nel browser.
+- **Memoria** — `knowledge` e `interaction` sono ora usate dal backend per la valutazione della ragione e per il profilo; `conversational` resta dichiarata e non usata.
+- **Backend** — **implementato** (vedi §8): memoria su file, API HTTP, classificatore LLM opzionale, suggerimenti e operazioni immagine.
 
 ---
 
@@ -169,5 +173,88 @@ I punti di innesto sono già definiti, così le fasi successive non dovranno ris
 - Nessuna scrittura senza `consent === true`: il controllo è nel Memory Engine, non solo nell'interfaccia, quindi vale anche per un uso futuro da script.
 - I record sono separati per `user_id` e la chiave di archiviazione contiene l'identificativo dell'utente.
 - `clear()` elimina tutti i record dell'utente corrente e rimuove la voce dall'archivio.
-- Nessun dato lascia il dispositivo: in questa versione non esiste alcun server e nessuna chiave API.
+- **Frontend:** nessun dato lascia il dispositivo; non esiste alcuna chiave API nel browser.
+- **Backend:** i dati restano in `data/chatmt.memory.<userId>.json`. Se viene configurata una chiave, solo la ragione ambigua viene inviata al provider LLM; senza chiave nessun testo esce dalla macchina. Il backend non ha autenticazione e va usato su localhost (vedi §8.5).
 - Se l'archivio è illeggibile, il sistema **solleva un errore** invece di mostrare una memoria vuota: un dato danneggiato non deve sembrare un dato assente.
+
+---
+
+## 8. Backend (fase 2.5)
+
+### 8.1 Vista d'insieme
+
+```
+POST /api/interactions
+   |
+   v
+[backend/server.js]  routing, validazione, CORS, mappatura degli errori
+   |
+   v
+[backend/services/interaction-service.js]
+   |  messaggi in sospeso -> reflect() -> buildResponse()
+   |  -> reason-assessment (regole) -> llm-classifier solo se indeciso
+   |  -> standing-engine -> design-suggestions
+   v
+[modules/memory/memory-store.js] + [backend/storage/file-adapter.js]
+   |  preferenza, correzione, profilo (interaction), valutazione (knowledge)
+   v
+data/chatmt.memory.<userId>.json
+```
+
+La regola di separazione resta la stessa: il calcolo e le decisioni vivono nei moduli, il server
+fa routing e validazione, l'interfaccia non calcola nulla.
+
+### 8.2 Moduli aggiunti
+
+| Modulo | Responsabilità | Interfaccia pubblica |
+|---|---|---|
+| `modules/meaning/colour-meanings.js` | indicizza e valida i significati, dichiara i colori senza significato | `createMeaningIndex(standard, {palette})` → `encouraged`, `questioned`, `assistance`, `representationFor`, `isEncouraged`, `isQuestioned`, `coloursWithoutMeaning`, `buildBiasExplanation` |
+| `modules/reflection/reason-assessment.js` | regole dichiarate per la ragione | `assessReasonWithRules({colourName, reason})`, `VERDICTS`, `METHODS`, `PERSONAL_MARKERS`, `COGENT_MARKERS`, `DECISION_THRESHOLDS` |
+| `modules/policy/standing-engine.js` | transizioni del profilo e messaggi differiti | `createDefaultStanding`, `normaliseStanding`, `applyAssessment`, `collectEngagementMessages`, `assistanceFor`, `summaryOf` |
+| `modules/policy/design-suggestions.js` | sfondi deterministici tendenti ai cinque colori | `buildDesignSuggestions`, `normaliseDesignContext`, `DESIGN_TYPES`, `BACKGROUND_STYLES` |
+| `modules/design/image-operations.js` | validazione delle operazioni | `parseOperations`, `assertCropFits`, `resolveResize`, `normaliseFormat`, `OUTPUT_FORMATS`, `IMAGE_LIMITS` |
+| `backend/llm-classifier.js` | seconda fase per le ragioni ambigue | `createLlmClassifier({apiBase, apiKey, model, timeoutMs})` → `configured`, `classify` |
+| `backend/services/interaction-service.js` | orchestra riflessione, politica, memoria, suggerimenti | `interact`, `suggestionsFor`, `savePreference`, `addCorrection`, `standingFor`, `memoryFor`, `deleteRecord`, `clearMemory` |
+| `backend/services/image-service.js` | crop, resize, rotate, conversione | `createImageService(limits)` → `transform` |
+| `backend/storage/file-adapter.js` | adattatore sincrono su file con scritture atomiche | `createFileAdapter({directory})`, `fileNameForKey`, `StorageError` |
+
+### 8.3 Dati e categorie
+
+Il profilo è un record della categoria `interaction` con contenuto `friendliness_standing`:
+livello, effort, sblocco degli accenti, ultima decisione, messaggi in sospeso, data. La
+valutazione della ragione è un record `knowledge` con esito, confidenza, metodo e parole
+corrispondenti; **la ragione grezza resta solo nella preferenza**, dove era già prevista.
+
+Le scritture sono atomiche (file temporaneo + rename). Ogni utente ha un file separato. Un file
+illeggibile produce `503 storage_unavailable`.
+
+### 8.4 Decisioni nuove
+
+| Decisione | Motivo | Alternativa scartata |
+|---|---|---|
+| Regole dichiarate prima, LLM solo per gli ambigui | il percorso comune resta offline, deterministica e verificabile; il modello non viene chiamato senza motivo | chiamare sempre il modello, che avrebbe reso ogni interazione dipendente da una chiave e da un servizio esterno |
+| Una decisione LLM sotto confidenza 0.5 resta indecisa | un giudizio incerto non deve punire l'utente con un profilo not friendly | accettare qualunque verdetto del modello, anche con confidenza quasi nulla |
+| I pattern lessicali restano in inglese | sono la lingua delle regole originali e del codice; tradurli avrebbe introdotto una seconda fonte di verità | fingere che le regole capiscano l'italiano: senza il modello, una ragione italiana resta `needs_review` |
+| Nessuna scrittura senza `consent: true`, anche per il profilo | è la regola non negoziabile del progetto | salvare il profilo automaticamente perché il creatore ha detto "store the data", che avrebbe violato la regola sul consenso |
+| Una ragione indecisa non cambia il profilo | un caso dubbio non deve essere trattato come personale | classificare per esclusione, che avrebbe punito una ragione solo perché ambigua |
+| 5 suggerimenti friendly, 2 not friendly | traduce "lesser graphic suggestions" in un numero verificabile, modificabile nello standard | un numero scelto nel codice, non revisionabile senza toccare il programma |
+| Gli sfondi rosso/giallo restano un accento | il testo chiede che i suggerimenti tendano ai cinque colori; l'accento soddisfa anche il caso cogente | sfondi interamente rossi o gialli, che avrebbero contraddetto la richiesta dei cinque colori |
+| Suggerimenti come CSS + SVG, non immagini generate | sono ispezionabili, deterministici e testabili; non esiste un modello di image generation in questo progetto | simulare immagini generate, che sarebbe stato dichiarare una capacità inesistente |
+| Immagini in base64 nel JSON | Node non offre multipart; una dipendenza in più non risolveva un problema di questa fase | parsing multipart scritto a mano, più codice non necessario |
+| Solo png, jpeg e bmp | sono i formati verificati dai test; l'ingresso è controllato dai byte iniziali | dichiarare gif, tiff o webp senza test che li coprano |
+
+### 8.5 Limiti del backend
+
+1. **Nessuna autenticazione:** chi raggiunge il server può usare qualsiasi `userId`. Ascolto su
+   `127.0.0.1` per default; non esporre senza autenticazione, autorizzazione, rate limiting e HTTPS.
+2. **Frontend non collegato:** le API sono documentate in `docs/backend-api.md`, ma l'interfaccia
+   continua a leggere e scrivere `localStorage`.
+3. **Qualità del giudizio non misurata:** non esiste un insieme etichettato di ragioni; le soglie
+   sono una convenzione. Il modello LLM è testato con un endpoint simulato, non con una chiave reale.
+4. **Nessun modello di image generation:** i suggerimenti sono specifiche CSS/SVG.
+5. **Nessuna transazione tra processi:** due server che scrivono lo stesso utente possono
+   sovrascriversi. Un solo processo per cartella dati è il caso supportato.
+6. **Nessuna latenza misurata sotto carico** per le API, e nessun limite di frequenza.
+7. **Le regole lessicali sono in inglese.** Una ragione scritta in italiano che non contiene i
+   pattern dichiarati resta `needs_review`; senza una chiave LLM non viene classificata e non
+   viene salvata.
