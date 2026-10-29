@@ -1,6 +1,10 @@
 /**
  * Tests of the red/yellow reason policy: declared wording rules, colour meanings and the
  * friendliness standing. No HTTP and no browser are involved.
+ *
+ * Two tests that used to pin the opposite decision were changed on 2026-10-29, because the
+ * project creator changed the rule: an absent reason is now personal in nature, and magenta and
+ * purple now carry the meanings of indigo and violet.
  */
 
 import { test } from 'node:test';
@@ -10,9 +14,11 @@ import fs from 'node:fs';
 import { assessReasonWithRules, VERDICTS, METHODS } from '../modules/reflection/reason-assessment.js';
 import { createMeaningIndex } from '../modules/meaning/colour-meanings.js';
 import {
+  DECISION_VERDICTS,
   EFFORT_LEVELS,
   STANDING_LEVELS,
   applyAssessment,
+  applyDecision,
   collectEngagementMessages,
   createDefaultStanding,
   normaliseStanding,
@@ -27,6 +33,13 @@ const meanings = createMeaningIndex(meaningStandard, { palette: PALETTE });
 
 function assess(reason, colourName = 'red') {
   return assessReasonWithRules({ colourName, reason });
+}
+
+function personal(colourName = 'red') {
+  return applyAssessment(createDefaultStanding(), {
+    assessment: assess('I just like it', colourName),
+    at: '2026-10-28T10:00:00.000Z'
+  }).standing;
 }
 
 test('the meaning standard keeps the five encouraged colours and the two questioned ones', () => {
@@ -47,21 +60,37 @@ test('the meaning standard keeps the five encouraged colours and the two questio
   assert.equal(meanings.assistance.reduced.suggestion_limit, 2);
 });
 
-test('a colour without a recorded meaning is reported, never invented', () => {
-  const without = meanings.coloursWithoutMeaning();
-  const names = without.map((entry) => entry.name);
-  assert.ok(names.includes('magenta'));
-  assert.ok(names.includes('purple'));
-  assert.equal(meanings.representationFor('magenta'), null);
-  assert.match(meanings.colourMeaningSentence('magenta'), /No meaning is recorded/);
+test('magenta shares the meaning of indigo and purple the meaning of violet', () => {
+  assert.deepEqual(
+    meanings.equivalent.map((entry) => `${entry.colour_name}:${entry.same_as}`),
+    ['magenta:indigo', 'purple:violet']
+  );
+  assert.deepEqual(meanings.representationFor('magenta').meanings, ['victory']);
+  assert.deepEqual(meanings.representationFor('purple').meanings, ['safety']);
+  assert.equal(meanings.isEncouraged('magenta'), true);
+  assert.equal(meanings.isEncouraged('purple'), true);
+  assert.equal(meanings.isEquivalent('magenta'), true);
+  assert.match(meanings.colourMeaningSentence('magenta'), /same meaning as indigo/);
 });
 
-test('the bias explanation displays the recorded representations', () => {
+test('a colour without a recorded meaning is still reported, never invented', () => {
+  const names = meanings.coloursWithoutMeaning().map((entry) => entry.name);
+  assert.ok(names.includes('lime'));
+  assert.ok(names.includes('grey'));
+  assert.equal(names.includes('magenta'), false, 'magenta now has the meaning of indigo');
+  assert.equal(meanings.representationFor('lime'), null);
+  assert.match(meanings.colourMeaningSentence('lime'), /No meaning is recorded/);
+});
+
+test('the bias explanation displays the recorded representations and the new rules', () => {
   const text = meanings.buildBiasExplanation();
   assert.match(text, /danger or royalty/);
   assert.match(text, /anger or determination/);
   assert.match(text, /not friendly/);
   assert.match(text, /green/);
+  assert.match(text, /magenta/);
+  assert.match(text, /absent reason counts as\s+personal|absent reason counts as personal/);
+  assert.match(text, /900 ms/);
 });
 
 test('a purely personal reason is classified as personal', () => {
@@ -77,6 +106,7 @@ test('a purely personal reason is classified as personal', () => {
     assert.equal(result.method, METHODS.RULES);
     assert.ok(result.confidence >= 0.5);
     assert.equal(result.reason_present, true);
+    assert.equal(result.absent_reason, false);
   }
 });
 
@@ -111,12 +141,16 @@ test('an ambiguous reason is left undecided instead of being forced into a categ
   assert.match(result.explanation.join(' '), /do not decide/);
 });
 
-test('a missing reason is undecided and is not treated as personal', () => {
-  const result = assess('');
-  assert.equal(result.verdict, VERDICTS.NEEDS_REVIEW);
-  assert.equal(result.reason_present, false);
-  assert.equal(result.confidence, 0);
-  assert.match(result.explanation.join(' '), /No reason was given/);
+test('an absent reason is personal in nature', () => {
+  for (const empty of ['', '   ', null, undefined]) {
+    const result = assess(empty);
+    assert.equal(result.verdict, VERDICTS.PERSONAL, `reason: ${JSON.stringify(empty)}`);
+    assert.equal(result.reason_present, false);
+    assert.equal(result.absent_reason, true);
+    assert.equal(result.method, METHODS.NONE);
+    assert.equal(result.confidence, 0.6);
+    assert.match(result.explanation.join(' '), /No reason was given/);
+  }
 });
 
 test('the assessment reports which declared wording matched', () => {
@@ -134,6 +168,7 @@ test('the standing starts friendly and is not changed by an undecided reason', (
   assert.equal(start.level, STANDING_LEVELS.FRIENDLY);
   assert.equal(start.effort, EFFORT_LEVELS.EXTENSIVE);
   assert.equal(summaryOf(start, { meanings }).suggestion_limit, 5);
+  assert.equal(summaryOf(start, { meanings }).display_delay_ms, 0);
 
   const assessment = assess('It is a strong colour');
   const decision = applyAssessment(start, { assessment, at: '2026-10-28T10:00:00.000Z' });
@@ -141,7 +176,7 @@ test('the standing starts friendly and is not changed by an undecided reason', (
   assert.equal(decision.standing.level, STANDING_LEVELS.FRIENDLY);
 });
 
-test('a personal reason makes the profile not friendly and schedules both messages', () => {
+test('a personal reason makes the profile not friendly, arms both messages and declares the delay', () => {
   const decision = applyAssessment(createDefaultStanding(), {
     assessment: assess('I just like it'),
     at: '2026-10-28T10:00:00.000Z'
@@ -154,6 +189,7 @@ test('a personal reason makes the profile not friendly and schedules both messag
   const summary = summaryOf(decision.standing, { meanings });
   assert.equal(summary.suggestion_limit, 2);
   assert.equal(summary.detail, 'brief');
+  assert.equal(summary.display_delay_ms, 900);
   assert.match(summary.why, /not friendly/);
 
   const firstNext = collectEngagementMessages(decision.standing, {
@@ -165,6 +201,7 @@ test('a personal reason makes the profile not friendly and schedules both messag
   assert.equal(firstNext.messages[0].code, 'personal-reason-displeasure');
   assert.equal(firstNext.messages[1].code, 'reduced-assistance-explanation');
   assert.match(firstNext.messages[0].text, /not pleased/);
+  assert.match(firstNext.messages[1].text, /900 ms/);
   assert.match(firstNext.messages[1].text, /previous interaction/);
 
   const secondNext = collectEngagementMessages(firstNext.standing, { meanings });
@@ -172,12 +209,73 @@ test('a personal reason makes the profile not friendly and schedules both messag
   assert.equal(secondNext.messages.length, 0);
 });
 
-test('a cogent reason restores the friendly profile and unlocks red/yellow accents', () => {
-  const personal = applyAssessment(createDefaultStanding(), {
-    assessment: assess('I just like it'),
-    at: '2026-10-28T10:00:00.000Z'
+test('an absent reason is stored as not friendly too, with its own wording', () => {
+  const decision = applyAssessment(createDefaultStanding(), {
+    assessment: assess(''),
+    at: '2026-10-29T10:00:00.000Z'
+  });
+  assert.equal(decision.standing.level, STANDING_LEVELS.NOT_FRIENDLY);
+  assert.equal(decision.standing.last_decision.verdict, DECISION_VERDICTS.ABSENT);
+  assert.equal(decision.standing.pending.displeasure, true);
+
+  const delivered = collectEngagementMessages(decision.standing, { meanings });
+  assert.match(delivered.messages[0].text, /without giving a reason/);
+  assert.match(delivered.messages[0].text, /Absent reason|absent reason/);
+});
+
+test('the displeasure can recur at every new personal or absent choice', () => {
+  let standing = personal();
+  const first = collectEngagementMessages(standing, { meanings, at: '2026-10-29T10:00:00.000Z' });
+  assert.equal(first.messages.length, 2);
+  standing = first.standing;
+
+  const quiet = collectEngagementMessages(standing, { meanings });
+  assert.equal(quiet.delivered, false);
+
+  const again = applyAssessment(standing, {
+    assessment: assess('Still no reason that helps'),
+    at: '2026-10-30T10:00:00.000Z'
+  });
+  assert.equal(again.standing.pending.displeasure, true);
+  const repeated = collectEngagementMessages(again.standing, { meanings });
+  assert.equal(repeated.delivered, true);
+  assert.equal(repeated.messages[0].code, 'personal-reason-displeasure');
+});
+
+test('choosing one of the encouraged colours makes a not friendly profile friendly again', () => {
+  const notFriendly = personal();
+  for (const colourName of ['green', 'blue', 'orange', 'indigo', 'violet', 'magenta', 'purple']) {
+    const decision = applyDecision(notFriendly, {
+      verdict: DECISION_VERDICTS.ENCOURAGED,
+      colourName,
+      at: '2026-10-30T10:00:00.000Z'
+    });
+    assert.equal(decision.standing.level, STANDING_LEVELS.FRIENDLY, colourName);
+    assert.equal(decision.standing.effort, EFFORT_LEVELS.EXTENSIVE, colourName);
+    assert.equal(summaryOf(decision.standing, { meanings }).display_delay_ms, 0, colourName);
+    assert.equal(summaryOf(decision.standing, { meanings }).suggestion_limit, 5, colourName);
+  }
+});
+
+test('an encouraged colour does not unlock red or yellow backgrounds by itself', () => {
+  const unlocked = applyAssessment(personal(), {
+    assessment: assess('Because it means royalty and the event is a heritage festival'),
+    at: '2026-10-29T10:00:00.000Z'
   }).standing;
-  const cogent = applyAssessment(personal, {
+  assert.equal(unlocked.allow_questioned_colours, true);
+
+  const afterGreen = applyDecision(unlocked, { verdict: DECISION_VERDICTS.ENCOURAGED, colourName: 'green' });
+  assert.equal(afterGreen.standing.allow_questioned_colours, true, 'an unlock earned by a cogent reason is kept');
+
+  const fromNothing = applyDecision(createDefaultStanding(), {
+    verdict: DECISION_VERDICTS.ENCOURAGED,
+    colourName: 'blue'
+  });
+  assert.equal(fromNothing.standing.allow_questioned_colours, false);
+});
+
+test('a cogent reason restores the friendly profile and unlocks red/yellow backgrounds', () => {
+  const cogent = applyAssessment(personal(), {
     assessment: assess('Because it means royalty and the event is a heritage festival'),
     at: '2026-10-29T10:00:00.000Z'
   }).standing;
@@ -187,6 +285,7 @@ test('a cogent reason restores the friendly profile and unlocks red/yellow accen
   assert.equal(cogent.allow_questioned_colours, true);
   assert.deepEqual(cogent.pending, { displeasure: false, effort_explanation: false });
   assert.equal(summaryOf(cogent, { meanings }).suggestion_limit, 5);
+  assert.equal(summaryOf(cogent, { meanings }).display_delay_ms, 0);
 });
 
 test('a damaged standing cannot silently unlock red/yellow accents', () => {

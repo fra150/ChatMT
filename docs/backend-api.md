@@ -1,10 +1,12 @@
 # ChatMT — Backend (API, regole e limiti)
 
-- **Stato:** implementato e verificato il 28 ottobre 2026
-- **Ambito:** solo backend. Il frontend esistente non è stato modificato e continua a usare
-  `localStorage`; il collegamento dell'interfaccia a queste API è un passo successivo.
-- **Test:** 87 test automatici superati (41 esistenti + 2 nuovi sulla memoria + 44 nei nuovi file), 47 controlli nel browser
-  rieseguiti sul frontend invariato.
+- **Stato:** aggiornato e verificato il 29 ottobre 2026 (regole nuove del creatore, interfaccia
+  collegata alle API, redesign “Ink Register” e passata di correzione).
+- **Ambito:** backend e interfaccia. Il frontend non usa più `localStorage`: legge la tavolozza,
+  la risposta, il profilo, la memoria e i suggerimenti da queste API, che servono anche la pagina
+  sulla stessa origine. I font sono locali (`frontend/fonts/`) e non vengono richiesti a servizi
+  esterni.
+- **Test:** 99 test automatici superati, 51 controlli nel browser superati.
 - **Linguaggio:** codice e identificativi in inglese, documentazione in italiano, come nel resto
   del progetto.
 
@@ -23,9 +25,10 @@ Il backend aggiunge ciò che il browser non poteva fare da solo:
 | Suggerimenti di sfondi tendenti ai cinque colori, ridotti per il profilo non friendly | `modules/policy/design-suggestions.js` |
 | Ritaglio, ridimensionamento, rotazione e conversione formato | `backend/services/image-service.js` |
 | API HTTP senza framework, con validazione ed errori espliciti | `backend/server.js` |
+| Interfaccia servita dalla stessa origine dell'API | `backend/static-files.js` |
 
 Le regole nuove non sono state inventate dal codice: vengono dai messaggi del creatore del
-28 ottobre 2026 ed è stata scritta una versione leggibile da una macchina in
+28 ottobre e del 29 ottobre 2026 ed è stata scritta una versione leggibile da una macchina in
 `standards/colour-meanings.json`.
 
 ---
@@ -45,15 +48,22 @@ In sviluppo, con dati in una cartella temporanea e porta diversa:
 PORT=3099 CHATMT_DATA_DIR=./data-dev npm start
 ```
 
-Il frontend resta servito a parte:
+La pagina è servita dallo stesso server:
 
-```bash
-python -m http.server 8000
-# http://localhost:8000/frontend/
-```
+- `GET /` → `302` verso `/frontend/`;
+- `GET /frontend/...` → i file dell'interfaccia.
 
-L'immagine Docker esistente serve solo il frontend statico: non avvia Node. Il backend va
-avviato con `npm start` (o con un'immagine Node dedicata, non inclusa in questa fase).
+`backend/static-files.js` risolve il percorso dentro la cartella `frontend/` e rifiuta ogni
+percorso che tenti di uscirne (`/frontend/../package.json` è un `404`, verificato dai test).
+Solo l'interfaccia è esposta: moduli, standard e dati non sono serviti come file.
+
+I tipi MIME sono espliciti: HTML, JavaScript, CSS, JSON, SVG, immagini e font. In particolare
+`.ttf`, `.otf` e `.woff` sono serviti come `font/ttf`, `font/otf` e `font/woff`, con
+`X-Content-Type-Options: nosniff`. I font dell'interfaccia sono locali e non esistono richieste a
+CDN o webfont remoti.
+
+L'immagine Docker avvia questo server (`node backend/server.js`) e scrive la memoria nel volume
+`/data`, quindi API e interfaccia arrivano insieme.
 
 ---
 
@@ -95,9 +105,14 @@ Non esiste un file `.env` caricato automaticamente: le variabili vanno esportate
 | violet | safety | incoraggiato |
 | red | danger or royalty | interrogato |
 | yellow | anger or determination | interrogato |
+| magenta | victory (stesso di indigo) | incoraggiato, equivalente |
+| purple | safety (stesso di violet) | incoraggiato, equivalente |
 
-Magenta e purple non hanno un significato nei messaggi del creatore: il sistema lo dichiara
-(`noMeaningRecorded`) e **non ne inventa uno**.
+Il 29 ottobre il creatore ha stabilito che magenta "falls into the same meaning" di indigo e
+purple di violet: il file standard li registra nella sezione `equivalent`, prendono il
+significato del colore di riferimento e ricevono l'assistenza estesa. I colori senza significato
+restano quelli non elencati dal creatore (lime, crimson, gold, navy, orchid, grey): il sistema lo
+dichiara (`noMeaningRecorded`) e **non ne inventa uno**.
 
 ### 4.2 Ragione personale o cogente
 
@@ -105,8 +120,9 @@ Per rosso e giallo la domanda del codice standard resta. La risposta viene class
 
 | Esito | Come viene deciso | Effetto |
 |---|---|---|
-| `personal` | regole dichiarate: gusto, "mi piace e basta", colore preferito, nessun motivo | profilo `not_friendly`; 2 suggerimenti brevi; nessun accento rosso/giallo; displeasure e spiegazione alla interazione successiva |
-| `cogent` | regole dichiarate: significato, scopo, pubblico, marca, contrasto, contesto di design | profilo `friendly`; 5 suggerimenti completi; accento rosso/giallo sbloccato |
+| `personal` | regole dichiarate: gusto, "mi piace e basta", colore preferito, nessun motivo | profilo `not_friendly`; 2 suggerimenti brevi; ritardo di 900 ms; nessuno sfondo rosso/giallo; displeasure e spiegazione alla interazione successiva |
+| `personal` con `reason_present: false` | nessuna ragione scritta: il 29 ottobre il creatore ha stabilito che una ragione **assente è personale** | come sopra; la preferenza però **non** viene salvata finché la domanda resta senza risposta |
+| `cogent` | regole dichiarate: significato, scopo, pubblico, marca, contrasto, contesto di design | profilo `friendly`; 5 suggerimenti completi; sfondi rosso/giallo sbloccati, ma solo su richiesta |
 | `needs_review` | le regole non decidono e il modello linguistico non è configurato, fallisce, resta incerto o ha confidenza sotto 0.5 | nessun profilo e nessuna preferenza salvati; si chiede una ragione più concreta |
 
 Le regole sono in `modules/reflection/reason-assessment.js`, con pesi e soglie dichiarati
@@ -121,14 +137,20 @@ salvata. Non esiste una traduzione automatica delle regole.
 ### 4.3 Profilo e assistenza
 
 - Il profilo nasce `friendly`.
-- Una ragione personale lo porta a `not_friendly`; resta così anche scegliendo green, blue,
-  orange, indigo o violet, finché non arriva una ragione cogente per rosso o giallo.
-- `not_friendly` significa 2 suggerimenti invece di 5 e descrizioni brevi invece che complete.
-- La displeasure e la spiegazione delle meno suggerimenti vengono consegnate **una sola volta**,
-  alla prima interazione successiva, e poi non si ripetono. Lo stato resta visibile in
-  `GET /api/users/:id/standing`.
-- Gli sfondi tendenti a rosso o giallo sono offerti solo dopo una ragione cogente. Restano
-  comunque composti da almeno due dei cinque colori incoraggiati più un accento.
+- **Scegliere uno dei cinque colori incoraggiati — o magenta o purple — riporta il profilo a
+  `friendly`.** Una ragione cogente per rosso o giallo fa lo stesso. Una ragione personale, o una
+  ragione assente, lo porta a `not_friendly`.
+- `not_friendly` è il "lesser effort" come lo ha definito il creatore il 29 ottobre: **un piccolo
+  ritardo prima di mostrare l'output** (`assistance.reduced.delay_ms`, 900 ms nel file standard) e
+  **meno suggerimenti di sfondo** (2 invece di 5, con descrizioni brevi).
+- La displeasure e la spiegazione del lesser effort vengono consegnate alla prima interazione
+  successiva. **La displeasure può ripetersi**: ogni nuova scelta personale o assente di rosso o
+  giallo la riarma. Lo stato resta visibile in `GET /api/users/:id/standing`.
+- Gli sfondi tendenti a rosso o giallo si ottengono **solo su richiesta esplicita** (`POST
+  /api/design/backgrounds`) e solo con una ragione cogente per la richiesta: l'app chiede subito
+  il motivo. Restano composti dal colore richiesto più due dei cinque colori incoraggiati.
+- **L'app suggerisce e non sceglie**: ogni risposta contiene `choice.by = "user"` e nessuno
+  sfondo viene applicato dal sistema.
 
 ### 4.4 Interpretazioni registrate
 
@@ -137,12 +159,18 @@ perché possano essere corrette, non perché siano le uniche possibili.
 
 | Domanda | Scelta | Motivo |
 |---|---|---|
-| Il consenso serve anche per il profilo? | sì | la regola del progetto vieta scritture senza consenso esplicito. Senza consenso la risposta viene calcolata, ma profilo e preferenza non vengono salvati e la displeasure non potrà arrivare alla interazione successiva |
-| "Lesser effort" quanto vale? | 2 suggerimenti invece di 5, dettaglio breve | è un numero verificabile e modificabile in `standards/colour-meanings.json` |
+| Il consenso serve anche per il profilo? | sì | la regola del progetto vieta scritture senza consenso esplicito. Senza consenso la risposta viene calcolata, ma profilo e preferenza non vengono salvati. Conseguenza dichiarata: **senza consenso anche il ritorno a `friendly` non viene registrato**, perché sarebbe una scrittura |
+| "Lesser effort" quanto vale? | ritardo di 900 ms **e** 2 suggerimenti brevi invece di 5 | il creatore del 29 ottobre ha spiegato che lesser effort significa un piccolo ritardo e meno suggerimenti; i numeri sono in `standards/colour-meanings.json` e modificabili senza toccare il codice |
+| Quanto dura il ritardo? | 900 ms | scelta registrata: percettibile come attesa, non come blocco. Il frontend mostra il valore dichiarato e quello misurato |
 | Una ragione cogente per rosso sblocca anche il giallo? | sì | il testo dice "yellow and red ... for users who give a cogent reason for choosing yellow or red" |
-| Il profilo torna friendly scegliendo un colore incoraggiato? | no | il testo lega il ritorno a una ragione cogente per rosso o giallo |
-| La displeasure si ripete? | no, una volta | "when next the users ... engages the app" indica la prima interazione successiva |
-| Un motivo assente è personale? | no | senza risposta la domanda resta aperta: nessun profilo viene toccato |
+| Il profilo torna friendly scegliendo un colore incoraggiato? | sì | deciso dal creatore il 29 ottobre: "a non friendly profile becomes friendly whenever any of the five colours are selected" |
+| Il ritorno tramite un colore incoraggiato sblocca anche gli sfondi rosso/giallo? | no | il creatore lega lo sblocco alla ragione per rosso o giallo e alla richiesta di sfondo; uno sblocco già ottenuto non viene revocato |
+| La displeasure si ripete? | sì | "Displeasure can recur if the user still chooses red or yellow without a cogent reason" |
+| Un motivo assente è personale? | sì | "Yes sir 'absent' reason is personal in nature" |
+| Cosa si salva con una ragione assente? | il profilo sì, la preferenza no | il creatore dice che i dati vengono salvati per l'ingaggio successivo; la domanda del codice standard resta però senza risposta, quindi la preferenza non viene accettata |
+| Magenta e purple? | stesso significato di indigo e violet | "Magenta should fall into the same meaning with Indigo, while purple shares the same meaning with violet" |
+| Sfondi rosso/giallo? | solo su richiesta e con ragione cogente | "only when a user request for it", "only be given as suggestions to a user who gives a cogent reason" |
+| Chi sceglie lo sfondo? | l'utente | "The app should only suggest backgrounds for users and not choose which background the user chooses to use" |
 | "majesta" e i colori senza significato? | nessun significato inventato | il file dei significati copre solo i colori elencati dal creatore |
 
 ---
@@ -158,15 +186,20 @@ POST /api/interactions
    +--> Reflection Engine: colore scelto vs 9 codici standard
    |       +--> risposta: regola, misura, incertezza, memoria
    |
-   +--> se il colore è rosso o giallo e c'è una ragione:
-   |       +--> regole dichiarate
+   +--> se il colore è rosso o giallo:
+   |       +--> regole dichiarate (una ragione assente è personale)
    |       +--> solo se indecise: modello linguistico (se configurato)
-   |       +--> profilo friendly / not_friendly
+   |       +--> profilo not_friendly (personale o assente) / friendly (cogente or colore incoraggiato)
    |
    +--> suggerimenti: 5 o 2, sempre tendenti ai cinque colori
    |
+   +--> display.delay_ms: 0 per il profilo friendly, 900 per quello not_friendly
+   |
    +--> scrittura solo con consent: true
 ```
+
+Una richiesta di sfondo rosso o giallo (`POST /api/design/backgrounds`) segue lo stesso schema,
+con in più la domanda immediata quando manca la ragione.
 
 ---
 
@@ -179,8 +212,8 @@ Base: `http://127.0.0.1:3080`. Tutte le risposte sono JSON. Gli errori hanno la 
 |---|---|---|
 | GET | `/api/health` | stato, standard caricati, LLM configurato o no |
 | GET | `/api/standards` | i due file standard completi |
-| GET | `/api/palette` | i 15 colori con copertura, significato, incoraggiato/interrogato |
-| GET | `/api/meanings` | i cinque colori, rosso/giallo, colori senza significato, politiche e risposta alla domanda sul bias |
+| GET | `/api/palette` | i 15 colori con copertura, significato, incoraggiato/equivalente/interrogato |
+| GET | `/api/meanings` | colori incoraggiati, equivalenti, rosso/giallo, numeri dell'assistenza, regole degli sfondi, colori senza significato, politiche e risposta alla domanda sul bias |
 | POST | `/api/interactions` | l'interazione principale |
 | GET | `/api/users/:userId/standing` | profilo e messaggi in sospeso (anteprima, non consuma) |
 | GET | `/api/users/:userId/memory` | record dell'utente, `?includeExpired=1` per includere scaduti |
@@ -188,8 +221,11 @@ Base: `http://127.0.0.1:3080`. Tutte le risposte sono JSON. Gli errori hanno la 
 | POST | `/api/users/:userId/corrections` | correzione di una risposta, record separato |
 | DELETE | `/api/users/:userId/memory/:recordId` | elimina un record |
 | DELETE | `/api/users/:userId/memory` | elimina tutti i record dell'utente |
+| GET | `/api/design/types` | i cinque tipi di design con etichetta e dimensioni |
 | POST | `/api/design/suggestions` | suggerimenti senza salvare nulla |
+| POST | `/api/design/backgrounds` | richiesta di uno sfondo rosso o giallo |
 | POST | `/api/design/transform` | crop, resize, rotate, conversione |
+| GET | `/` e `/frontend/...` | l'interfaccia, sulla stessa origine |
 
 `userId` deve corrispondere a `[A-Za-z0-9_-]{1,64}`.
 
@@ -222,7 +258,8 @@ Risposta (campi principali):
 | `reasonAssessment` | esito, confidenza, metodo (`rules` / `llm` / `none`), punteggi, parole corrispondenti, spiegazione, stato LLM |
 | `profile` | livello, effort, limite suggerimenti, sblocco rosso/giallo, ultima decisione, messaggi in sospeso, `why`, `decision.applied` |
 | `standingMessages` | displeasure e spiegazione dovute a questa interazione (vuoto se non ancora dovute o già consegnate) |
-| `designSuggestions` | `design`, `assistance` (limite, nota, blocco rosso/giallo) e `suggestions` (CSS + SVG) |
+| `display` | `delay_ms`: il ritardo che l'interfaccia deve rispettare prima di mostrare l'output |
+| `designSuggestions` | `choice` (chi sceglie), `design`, `assistance` (limite, ritardo, nota, blocco rosso/giallo) e `suggestions` (CSS + SVG) |
 | `stored` | identificativi di preferenza, profilo e valutazione; `null` se non salvati |
 
 Esempio di risposta personale alla prima interazione: `standingMessages` è vuoto e
@@ -245,9 +282,11 @@ Estratto della risposta (non tutti i campi, ma JSON valido):
     "level": "not_friendly",
     "effort": "reduced",
     "suggestion_limit": 2,
+    "display_delay_ms": 900,
     "allow_questioned_colours": false,
     "decision": { "verdict": "personal", "applied": true }
   },
+  "display": { "delay_ms": 900 },
   "standingMessages": [],
   "stored": {
     "preferenceId": "id-preference",
@@ -267,6 +306,7 @@ Estratto della risposta (non tutti i campi, ma JSON valido):
     "effort": "reduced",
     "suggestion_limit": 2,
     "detail": "brief",
+    "display_delay_ms": 900,
     "allow_questioned_colours": false,
     "last_decision": { "colour_name": "red", "verdict": "personal" },
     "pending": { "displeasure": false, "effort_explanation": false },
@@ -309,10 +349,47 @@ direzionale richiede `reason`; se la ragione resta indecisa la risposta è
 ```
 
 Restituisce gli stessi suggerimenti dell'interazione, senza scrivere memoria. Un profilo
-`not_friendly` riceve 2 suggerimenti brevi; uno `friendly` ne riceve 5. L'ultimo suggerimento di
-un profilo sbloccato porta un accento rosso o giallo.
+`not_friendly` riceve 2 suggerimenti brevi e `assistance.delay_ms = 900`; uno `friendly` ne
+riceve 5 con ritardo 0. L'ultimo suggerimento di un profilo sbloccato porta un accento rosso o
+giallo. `choice.by` è sempre `"user"`.
 
-### 6.5 `POST /api/design/transform`
+### 6.5 `POST /api/design/backgrounds`
+
+La richiesta esplicita di uno sfondo tendente a rosso o giallo. Il colore deve essere `red` o
+`yellow`: ogni altro colore produce `400 background_not_questioned`.
+
+Senza `reason` l'app risponde con la domanda e con nient'altro: nessuno sfondo, nessuna
+scrittura.
+
+```json
+{
+  "userId": "local-user",
+  "colour": { "name": "red" },
+  "consent": true,
+  "design": { "type": "flyer" }
+}
+```
+
+```json
+{
+  "requiresReason": true,
+  "accepted": false,
+  "question": "Why do you want a red or yellow background?",
+  "notice": "The app asks immediately: ...",
+  "designSuggestions": null,
+  "stored": { "standingRecordId": null, "assessmentRecordId": null }
+}
+```
+
+Con una `reason` la classificazione è quella normale:
+
+| Esito | Effetto |
+|---|---|
+| `cogent` | `accepted: true`; profilo friendly; `designSuggestions` con gli sfondi tendenti al colore richiesto (`assistance.suggestion_limit` = 3), sempre come suggerimenti |
+| `personal` o assente | `accepted: false`; profilo `not_friendly` e dati salvati (con consenso) per l'ingaggio successivo; nessuno sfondo rosso o giallo, al suo posto i 2 suggerimenti ridotti tendenti ai cinque colori |
+| `needs_review` | niente sfondi e niente profilo: si chiede una ragione più concreta |
+
+### 6.6 `POST /api/design/transform`
 
 L'immagine viaggia in base64 dentro il JSON (niente multipart: Node non lo offre e non è stata
 aggiunta una dipendenza per questo). Formati di ingresso ammessi: **png, jpeg, bmp**, verificati
@@ -354,11 +431,11 @@ Regole:
 - limiti di byte, lato e pixel da configurazione;
 - nessun ridimensionamento oltre 8000 px per lato.
 
-### 6.6 Codici di errore
+### 6.7 Codici di errore
 
 | Stato | Codici |
 |---|---|
-| 400 | `invalid_json`, `invalid_request`, `invalid_user_id`, `invalid_record_id`, `colour_required`, `unknown_colour`, `colour_mismatch`, `invalid_colour`, `invalid_consent`, `invalid_reason`, `reason_too_long`, `reason_required`, `reason_unclear`, `invalid_operation`, `too_many_operations`, `crop_out_of_bounds`, `invalid_format`, `invalid_image` |
+| 400 | `invalid_json`, `invalid_request`, `invalid_user_id`, `invalid_record_id`, `colour_required`, `unknown_colour`, `colour_mismatch`, `invalid_colour`, `invalid_consent`, `invalid_reason`, `reason_too_long`, `reason_required`, `reason_unclear`, `background_not_questioned`, `invalid_operation`, `too_many_operations`, `crop_out_of_bounds`, `invalid_format`, `invalid_image` |
 | 403 | `consent_required` |
 | 404 | `not_found`, `record_not_found` |
 | 405 | `method_not_allowed` |
@@ -451,8 +528,8 @@ Categorie usate dal backend:
 
 Dichiarato per non promettere ciò che non è stato costruito:
 
-1. **Non collega il frontend.** Le API sono pronte e documentate; `frontend/js/app.js` continua
-   a usare `localStorage`.
+1. **Non fa autenticazione.** L'interfaccia è collegata, ma chiunque raggiunga il server può
+   usare qualsiasi `userId` (vedi §9).
 2. **Non genera immagini con un modello.** I suggerimenti sono specifiche deterministiche
    (CSS + SVG), non fotografie né rendering. Non c'è un modello di image generation.
 3. **Non è un editor grafico completo.** Fa crop, resize, rotazione a quarti di giro e
@@ -472,25 +549,28 @@ Dichiarato per non promettere ciò che non è stato costruito:
 
 ## 11. Test misurati
 
-Eseguiti il 28 ottobre 2026 su Windows, Node.js v26.5.0.
+Eseguiti il 29 ottobre 2026 su Windows, Node.js v26.5.0.
 
 | Comando | Risultato |
 |---|---|
-| `node tests/run-tests.mjs` | **87/87** test superati |
-| `node tests/browser-checks.mjs http://127.0.0.1:8123/frontend/index.html` | **47/47** controlli superati (frontend invariato) |
+| `node tests/run-tests.mjs` | **99/99** test superati |
+| `node tests/browser-checks.mjs` | **51/51** controlli superati (lo script avvia da sé il backend) |
 
-I 46 test nuovi coprono:
+I test coprono in particolare, per le regole del 29 ottobre:
 
-- `tests/reason-policy.test.mjs` — significati, regole personali/cogenti, negazioni, casi
-  ambigui, transizioni del profilo, consegna una sola volta di displeasure e spiegazione;
-- `tests/design-suggestions.test.mjs` — 5 vs 2 suggerimenti, solo colori incoraggiati, accento
-  rosso/giallo solo con ragione cogente, determinismo, validazione delle operazioni immagine;
-- `tests/backend.test.mjs` — server HTTP reale su porta effimera, health, interazioni,
-  persistenza tra due istanze del server, isolamento tra utenti, memoria e consenso, errori,
-  LLM simulato (incluso il fallimento e la confidenza bassa), crop/resize/rotate e conversione png/jpeg/bmp,
-  rifiuto di gif e di immagini non decodificabili;
-- `tests/memory.test.mjs` — due test aggiunti per `addRecord`, `latestRecord` e
-  `updateContent`, i metodi generici usati dal backend per profilo e valutazioni.
+- `tests/reason-policy.test.mjs` — significati ed equivalenze (magenta/indigo, purple/violet),
+  regole personali/cogenti, negazioni, casi ambigui, **ragione assente = personale**, ritorno a
+  `friendly` con un colore incoraggiato, displeasure ricorrente, ritardo dichiarato;
+- `tests/design-suggestions.test.mjs` — 5 vs 2 suggerimenti, `delay_ms` 0 vs 900, solo colori
+  incoraggiati, sfondo rosso/giallo richiesto e prodotto solo con ragione cogente,
+  `choice.by = "user"`, determinismo, validazione delle operazioni immagine;
+- `tests/backend.test.mjs` — server HTTP reale su porta effimera, health, tipi di design,
+  interazioni, ripristino del profilo con un colore incoraggiato, displeasure che si ripete,
+  richiesta di sfondo rosso/giallo (domanda, esito personale e cogente), interfaccia servita
+  dalla stessa origine con il rifiuto dei percorsi che escono da `frontend/`, font `.ttf` serviti
+  come `font/ttf` con `nosniff`, persistenza tra due istanze del server, isolamento tra utenti,
+  memoria e consenso, errori, LLM simulato, crop/resize/rotate e conversione png/jpeg/bmp;
+- `tests/memory.test.mjs` — i metodi generici usati dal backend per profilo e valutazioni.
 
 Non misurati: accuratezza del classificatore su dati reali, latenza sotto carico, consumo di
 risorse, e qualità dei suggerimenti grafici percepita da persone.
@@ -499,9 +579,10 @@ risorse, e qualità dei suggerimenti grafici percepita da persone.
 
 ## 12. Prossimi passi possibili
 
-1. Collegare il frontend alle API (sostituendo l'adapter `localStorage` con `fetch`).
-2. Aggiungere autenticazione e autorizzazione per profilo prima di esporre il server.
-3. Costruire un insieme etichettato di ragioni per misurare precisione e richiamo delle regole
+1. Aggiungere autenticazione e autorizzazione per profilo prima di esporre il server.
+2. Costruire un insieme etichettato di ragioni per misurare precisione e richiamo delle regole
    e del modello.
-4. Aggiungere anteprima e download dei suggerimenti SVG nel frontend.
+3. Aggiungere il download dei suggerimenti SVG nel frontend (oggi la pagina mostra il gradiente
+   CSS equivalente e cita il CSS, senza mai inserire l'SVG nel documento).
+4. Portare le operazioni immagine nell'interfaccia, oggi raggiungibili solo via API.
 5. Valutare un editor grafico più ampio come fase separata, con requisiti e test propri.

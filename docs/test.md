@@ -3,10 +3,12 @@
 Ogni numero in questo documento è stato prodotto eseguendo il comando indicato su questa macchina.
 Nessun risultato è stimato. Dove una metrica non è stata misurata, è scritto che non è stata misurata.
 
-- **Data delle esecuzioni:** 26 ottobre 2026 (frontend) e 28 ottobre 2026 (backend)
-- **Ultima esecuzione completa:** 28 ottobre 2026 — **87/87** test automatici, **47/47**
-  controlli nel browser, `npm start` verificato su una porta temporanea
-- **Ambiente:** Windows, Node.js v26.5.0, Python 3.13, Chrome 156, Docker 29.9.2
+- **Data delle esecuzioni:** 26 ottobre 2026 (frontend), 28 ottobre 2026 (backend) e
+  29 ottobre 2026 (regole nuove, interfaccia collegata alle API, redesign “Ink Register” e
+  passata di correzione)
+- **Ultima esecuzione completa:** 29 ottobre 2026 — **99/99** test automatici, **51/51**
+  controlli nel browser (che avviano da sé il backend su una cartella temporanea)
+- **Ambiente:** Windows, Node.js v26.5.0, Chrome 156
 
 ---
 
@@ -16,8 +18,9 @@ Nessun risultato è stimato. Dove una metrica non è stata misurata, è scritto 
 |---|---|---|
 | `node tests/run-tests.mjs` (o `npm test`) | Node.js e `jimp` (unica dipendenza) | la logica e il backend: spazio colore, CIEDE2000, bande, memoria, riflessione, risposte, regole della ragione, profilo, suggerimenti, immagini, API HTTP |
 | `npm start` + richieste HTTP | Node.js e `jimp` | il server reale avviato con lo script di produzione: health, interazioni, memoria su disco, trasformazioni |
-| `python -m http.server 8000` + `node tests/browser-checks.mjs http://127.0.0.1:8000/frontend/index.html` | server HTTP in esecuzione e Chrome installato | l'interfaccia reale: 47 controlli sul DOM di un browser vero |
-| `docker build -t chatmt .` + `docker run --rm -p 8080:80 chatmt` | Docker | che il container serva il frontend statico (non avvia Node) |
+| `node tests/browser-checks.mjs` | Chrome installato (il server se lo avvia lo script) | l'interfaccia reale: 51 controlli sul DOM di un browser vero, contro un backend vero |
+| `node tests/browser-checks.mjs http://127.0.0.1:3080/frontend/index.html?user=prova` | un server già avviato | gli stessi controlli su un'istanza scelta da te |
+| `docker build -t chatmt .` + `docker run --rm -p 8080:3080 chatmt` | Docker | che il container avvii il server Node e serva API e interfaccia insieme |
 
 I livelli sono complementari: i test automatici non vedono l'interfaccia, e i controlli nel browser non verificano i dati di riferimento della formula CIEDE2000 né il backend.
 
@@ -89,46 +92,58 @@ Nota: nei test il tempo e gli identificativi sono iniettati (`now`, `idFactory`)
 | assenza di segnaposto | nessun `undefined` o `NaN` finisce nel testo della risposta |
 | tutti i colori della tavolozza | 15 colori producono tutti una risposta completa senza errori |
 
-### 2.4 `tests/reason-policy.test.mjs` (14 test)
+### 2.4 `tests/reason-policy.test.mjs` (17 test)
 
 | Test | Cosa dimostra |
 |---|---|
 | standard dei significati | cinque colori incoraggiati, rosso e giallo interrogati, limiti 5/2 |
-| colori senza significato | magenta e purple sono dichiarati senza significato, non interpretati |
-| spiegazione del bias | contiene "danger or royalty" e "anger or determination" |
+| equivalenze | magenta porta il significato di indigo e purple quello di violet; entrambi contano come incoraggiati |
+| colori senza significato | lime e grey sono dichiarati senza significato; magenta non più |
+| spiegazione del bias | contiene "danger or royalty", "anger or determination", i colori equivalenti, la ragione assente e il ritardo |
 | ragione personale | "mi piace e basta", colore preferito, nessun motivo, gusto personale → `personal` |
 | ragione cogente | significato, marca, pubblico, contrasto, contesto di design → `cogent` |
 | negazione | "non mi piace solo perché..." non viene contata come ragione personale |
-| ragione ambigua o assente | resta `needs_review`; una ragione assente non è trattata come personale |
-| transizioni del profilo | personale → `not_friendly` e 2 suggerimenti; cogente → `friendly`, 5 suggerimenti e accento sbloccato |
-| consegna una sola volta | la displeasure e la spiegazione compaiono alla prima interazione successiva e non si ripetono |
-| profilo danneggiato | un `not_friendly` con `allow_questioned_colours` forzato non sblocca gli accenti |
+| ragione ambigua | resta `needs_review` |
+| ragione assente | **è personale**: `personal` con `method: none`, `absent_reason: true`, confidenza 0.6 |
+| transizioni del profilo | personale → `not_friendly`, 2 suggerimenti, ritardo 900 ms; cogente → `friendly`, 5 suggerimenti, sfondi sbloccati |
+| ragione assente nel profilo | il profilo diventa `not_friendly` con una formulazione propria ("without giving a reason") |
+| displeasure ricorrente | dopo una consegna, una nuova scelta personale la riarma e viene consegnata di nuovo |
+| ritorno con colore incoraggiato | green, blue, orange, indigo, violet, magenta e purple riportano il profilo a `friendly` con ritardo 0 e 5 suggerimenti |
+| sblocco degli sfondi | un colore incoraggiato non sblocca rosso/giallo da solo e non revoca uno sblocco già ottenuto |
+| consegna una sola volta | la displeasure e la spiegazione compaiono alla prima interazione successiva e non si ripetono senza una nuova decisione |
+| profilo danneggiato | un `not_friendly` con `allow_questioned_colours` forzato non sblocca gli sfondi |
 
-### 2.5 `tests/design-suggestions.test.mjs` (11 test)
+### 2.5 `tests/design-suggestions.test.mjs` (14 test)
 
 | Test | Cosa dimostra |
 |---|---|
 | profilo friendly | 5 suggerimenti, tutti composti solo dai cinque colori, con CSS e SVG |
 | determinismo | lo stesso input produce esattamente lo stesso output |
 | profilo not friendly | 2 suggerimenti, dettaglio breve, nota di assistenza ridotta, nessun accento |
+| ritardo e scelta | `delay_ms` 0 per il profilo esteso, 900 per quello ridotto; `choice.by = "user"` e `applied: false` |
 | ragione cogente | il quinto suggerimento porta un accento rosso/giallo e almeno due colori incoraggiati |
 | accento coerente | l'accento segue il colore della ragione cogente, non quello del design |
+| sfondo richiesto | senza sblocco o con un colore non interrogato viene rifiutato (`RangeError`); con ragione cogente produce 3 sfondi tendenti al colore richiesto, deterministi |
 | tipi di design | flyer, poster, social post, banner e background mantengono le proprie dimensioni |
 | validazione | tipo sconosciuto, oggetto troppo lungo e campi non testuali sono rifiutati |
 | operazioni immagine | crop, resize con proporzioni, rotazione a quarti di giro, formati png/jpeg/bmp e limiti |
 
-### 2.6 `tests/backend.test.mjs` (19 test)
+### 2.6 `tests/backend.test.mjs` (23 test)
 
 | Test | Cosa dimostra |
 |---|---|
-| health e standard | standard caricati, LLM non configurato, palette e significati esposti |
-| interazione verde | profilo friendly, 5 suggerimenti, preferenza scritta su disco |
-| rosso senza ragione | domanda posta, nessuna scrittura, profilo invariato |
+| health e standard | standard caricati, LLM non configurato, palette, significati con equivalenze e numeri dell'assistenza, tipi di design |
+| interazione verde | profilo friendly, decisione `encouraged`, 5 suggerimenti, preferenza e profilo scritti su disco |
+| rosso senza ragione | domanda posta, **profilo salvato come `not_friendly`**, preferenza non salvata, ritardo 900 ms |
 | ragione personale | profilo `not_friendly`, 2 suggerimenti, tre record (preferenza, profilo, valutazione) |
-| consegna differita | alla interazione successiva arrivano displeasure e spiegazione, una sola volta |
+| consegna differita | alla interazione successiva arrivano displeasure e spiegazione |
+| displeasure ricorrente | una seconda scelta personale la riarma e la consegna avviene di nuovo |
+| ripristino del profilo | dopo una ragione personale, magenta riporta a `friendly`, ritardo 0, 5 suggerimenti |
 | persistenza | una seconda istanza del server sullo stesso archivio ritrova il profilo |
-| ragione cogente | tono friendly, accento rosso/giallo sbloccato |
+| ragione cogente | tono friendly, sfondi rosso/giallo sbloccati |
 | ragione ambigua | nessuna scrittura e nessun profilo inventato |
+| sfondo rosso/giallo | la richiesta senza ragione produce solo la domanda; la ragione personale attiva il mood ostile con 2 suggerimenti senza rosso; quella cogente produce 3 sfondi tendenti al colore richiesto; un colore diverso → 400 |
+| interfaccia servita | `GET /` → 302, `/frontend/` e `/frontend/js/app.js` → 200, font `.ttf` → 200 `font/ttf` + `nosniff`, percorsi che escono da `frontend/` → 404 |
 | LLM simulato | viene usato solo per la ragione ambigua; il fallimento e una confidenza sotto 0.5 lasciano `needs_review` |
 | suggerimenti HTTP | 2 per il profilo ridotto, 5 per quello esteso, tipo non valido → 400 |
 | immagini | crop, resize, rotate, PNG/JPEG/BMP in uscita e JPEG in ingresso |
@@ -142,10 +157,10 @@ Nota: nei test il tempo e gli identificativi sono iniettati (`now`, `idFactory`)
 
 ```
 node tests/run-tests.mjs
-tests 87   pass 87   fail 0   duration_ms 1050
+tests 99   pass 99   fail 0
 ```
 
-87 test superati, 0 falliti. Sono inclusi i 34 confronti CIEDE2000 di riferimento, ciascuno verificato con tolleranza 1e-4. I 44 test nei tre nuovi file sono i 14 di `reason-policy`, gli 11 di `design-suggestions` e i 19 di `backend`; altri 2 test in `memory.test.mjs` coprono i metodi generici usati dal backend.
+99 test superati, 0 falliti. Sono inclusi i 34 confronti CIEDE2000 di riferimento, ciascuno verificato con tolleranza 1e-4. I 14 test di `reason-policy`, i 14 di `design-suggestions` e i 23 di `backend` sono quelli aggiornati o aggiunti per le regole del 29 ottobre.
 
 **Un risultato non ovvio emerso dai test** e conservato come caso di regressione: il colore
 `lime` (`#00FF00`) senza standard risulta più vicino a **yellow** (23.40) che a **green**
@@ -157,41 +172,66 @@ va perso.
 
 ## 3. Controlli dell'interfaccia (`tests/browser-checks.mjs`)
 
-47 controlli eseguiti su un Chrome reale pilotato via DevTools Protocol, con asserzioni sul DOM
-dopo ogni azione. **Rieseguiti il 28 ottobre 2026 dopo l'aggiunta del backend,** con lo stesso
-risultato: il frontend non è stato modificato. Verificano, nell'ordine:
+51 controlli eseguiti su un Chrome reale pilotato via DevTools Protocol, con asserzioni sul DOM
+dopo ogni azione. Da questa versione lo script **avvia da sé il backend** su una porta effimera e
+una cartella dati temporanea, con un utente nuovo per ogni esecuzione: non serve preparare
+nulla a mano.
 
-1. la tavolozza mostra 9 colori coperti da uno standard e 6 non coperti, senza errori all'avvio;
-2. selezionando `green` la risposta cita il codice `colour-green`, dichiara l'accettazione, mostra la rappresentazione strutturata e **non offre alcuna memorizzazione senza consenso**;
-3. dopo il consenso compare il pulsante di salvataggio, la preferenza appare nella memoria come "confirmed", e il confronto successivo riporta distanza zero;
-4. la preferenza sopravvive a una ricarica della pagina, mentre **il consenso viene richiesto di nuovo**;
-5. selezionando `blue` la risposta confronta con la preferenza memorizzata e propone di **sostituirla** invece di sovrascriverla;
-6. selezionando `red` viene posta la domanda del file originale, la memorizzazione è bloccata finché non si risponde, e dopo la risposta il pulsante di sostituzione compare e conserva la risposta data;
-7. selezionando `lime` (non coperto) la risposta dichiara che nessuno standard lo copre, l'incertezza è "high", e il pulsante dichiara che il valore sarà memorizzato come **osservazione non confermata**: la memoria lo registra come `unconfirmed`, non come accettato;
-8. registrando una correzione la contraddizione `correction-against-standard` viene mostrata con la frase "the standard has not been changed automatically", e la correzione è un record separato;
-9. eliminando un record ne sparisce uno solo, e la cancellazione totale svuota la memoria e rimuove la voce da `localStorage`;
+Verificano, nell'ordine:
+
+1. la tavolozza arriva dall'API: 9 colori coperti, 6 non coperti, nessun errore, utente preso dall'URL, profilo `friendly`, magenta mostrato come "same as indigo";
+2. dopo il consenso, `green` produce una risposta che cita `colour-green`, il profilo resta friendly, **nessun ritardo**, 5 suggerimenti, e in memoria finiscono 2 record;
+3. `red` senza ragione: il pannello della ragione appare con la domanda del file originale, la risposta dichiara **che una ragione assente è personale**, il profilo diventa `not_friendly`, il ritardo viene annunciato e **misurato** (>= 850 ms), i suggerimenti scendono a 2;
+4. una ragione personale lascia il profilo `not_friendly` e **non** mostra subito la displeasure;
+5. `blue` al passo successivo fa arrivare la displeasure e la spiegazione del lesser effort (che citano i 900 ms) e **riporta il profilo a friendly**, senza ritardo;
+6. la richiesta di uno sfondo rosso chiede subito il motivo; una ragione non cogente attiva il mood ostile, riduce i suggerimenti a 2 e **non** propone alcun rosso; una ragione cogente per il giallo produce 3 sfondi tendenti al giallo (`requested: yellow`);
+7. nessuno sfondo è scelto dall'app: il pannello dice che non c'è scelta finché l'utente non preme "Use this background", e solo allora la preview viene dipinta;
+8. cambiando il tipo di design e premendo "Update suggestions" i suggerimenti seguono il tipo scelto;
+9. una correzione viene registrata come record separato, la contraddizione `correction-against-standard` viene mostrata con "the standard has not been changed automatically", l'eliminazione toglie un solo record e la cancellazione totale svuota la memoria e riporta il profilo a `friendly`;
 10. nessuna eccezione non gestita e nessun errore in console durante tutto il percorso.
 
 ### Risultato dell'esecuzione
 
 ```
-node tests/browser-checks.mjs http://127.0.0.1:8123/frontend/index.html
-47/47 browser checks passed
+node tests/browser-checks.mjs
+51/51 browser checks passed
 ```
 
-**Difetto trovato da questi controlli** e poi corretto: per un colore non coperto da nessuno
-standard, quando esisteva già una preferenza il pulsante diceva soltanto "Replace my stored
-preference", senza dichiarare che il nuovo valore sarebbe stato memorizzato come osservazione
-non confermata. Il pulsante ora lo dichiara in entrambi i casi, e il controllo che lo verifica
-è rimasto nel test.
+**Difetti trovati da questi controlli** e poi corretti: l'etichetta della domanda sullo sfondo
+veniva letta prima che la risposta arrivasse; il badge del profilo veniva controllato prima che
+il ritardo fosse terminato (la pagina mostra il testo subito e il profilo dopo, come deve); due
+controlli cercavano un testo che la pagina non usa. In tutti e tre i casi il difetto era nel
+controllo, non nel codice, ed è stato corretto nel controllo invece di allentare l'asserzione.
+
+### Verifiche manuali della passata di correzione (29 ottobre 2026)
+
+Queste verifiche **non fanno parte dei 51 controlli automatici**: sono state eseguite a mano su
+Chrome dopo il redesign, perché misurano stati che i controlli esistenti non coprono. Il test
+backend è stato esteso con l'asserzione sul MIME dei font, ma il numero di test resta 99.
+
+| Verifica | Risultato |
+|---|---|
+| focus da tastiera su un campo | `:focus-visible` attivo, outline `2px solid rgb(192,48,27)` |
+| palette a 768 px | 2 colonne; gli item 3 e 9 hanno `border-right: 1px` |
+| ordine mobile a 390 px | `<main>` prima di `<aside class="ticket">`, nessun overflow orizzontale |
+| risposta fuori ordine | una `red` ritardata non sovrascrive la `blue` più recente; nessun delay residuo |
+| errore di rete | `#chat-typing` rimosso, stato di errore visibile, nessuna bolla assistant |
+| sfondo chiesto per `red`, select cambiato a `yellow` | la richiesta parte ancora con `red` |
+| font locali | `Content-Type: font/ttf`, `X-Content-Type-Options: nosniff` |
+| 1440 / 1024 / 390 px | 0 px di overflow orizzontale, nessun errore console, risorse tutte `200` |
+
+La passata ha anche corretto difetti che i controlli non coprivano: typing residuo dopo un
+errore, bolle utente mancanti o duplicate, pannelli obsoleti dopo una nuova selezione, risposte
+fuori ordine, colore dello sfondo letto dal select invece che dalla domanda, outline di focus
+annullato, bordi della palette a 768 px e ordine DOM mobile diverso dall'ordine visivo.
 
 ---
 
-## 4. Backend HTTP (28 ottobre 2026)
+## 4. Backend HTTP (29 ottobre 2026)
 
 Oltre ai test dentro `node --test`, il server è stato avviato con lo stesso comando di
 produzione (`node backend/server.js`) su una porta e una cartella dati temporanee, e interrogato
-con `curl`. I 19 test di `tests/backend.test.mjs` fanno la stessa cosa su una porta scelta dal
+con `curl`. I 23 test di `tests/backend.test.mjs` fanno la stessa cosa su una porta scelta dal
 sistema e con un archivio temporaneo, quindi la verifica è ripetibile senza servizi esterni.
 
 | Verifica eseguita a mano | Risultato |
@@ -209,21 +249,29 @@ e fallimento), non contro il servizio esterno.
 
 ## 5. Verifica del container Docker
 
+Rieseguita il 29 ottobre 2026, perché il Dockerfile è cambiato: l'immagine ora avvia il server
+Node invece di servire file statici con nginx.
+
 ```
 docker build -t chatmt:verify .          -> immagine costruita
-docker run -d --name chatmt-verify -p 8180:80 chatmt:verify
+docker run -d --name chatmt-verify -p 8180:3080 chatmt:verify
 ```
 
 | Verifica | Risultato |
 |---|---|
 | `GET /` | 302 verso `/frontend/` |
-| `GET /frontend/index.html`, `/frontend/css/styles.css`, `/frontend/js/app.js` | 200 |
-| `GET /standards/usage-of-colours.json`, `/modules/reflection/reflection-engine.js`, `/modules/memory/memory-store.js` | 200 |
-| `GET /nope.txt` | 404, non la pagina di benvenuto di nginx |
+| `GET /frontend/` | 200, `text/html; charset=utf-8` |
+| `GET /frontend/../package.json` | 404, il percorso non esce dalla cartella dell'interfaccia |
+| `GET /api/health` | `status: ok`, usage-of-colours v1.0.0 con 9 regole, colour-meanings **v2.0.0** |
+| `POST /api/interactions` (rosso, ragione personale) | risposta completa, con la domanda del codice standard e la misura |
 | healthcheck del container | `healthy` |
-| 47 controlli nel browser sull'applicazione servita dal container (`http://127.0.0.1:8180/frontend/index.html`) | 47/47 superati |
+| 51 controlli nel browser sul container (`http://127.0.0.1:8180/frontend/index.html?user=docker-browser-2`) | 51/51 superati |
 
-Il container serve solo il frontend statico: **non avvia il backend Node** e non espone le API.
+Il container avvia il backend e serve API e interfaccia insieme, sulla porta 3080 e sulla stessa
+origine; la memoria è nel volume `/data`.
+
+Nota: i controlli nel browser usano `?user=` per scegliere un utente nuovo, quindi non
+dipendono dai dati già presenti nel volume.
 
 ---
 
@@ -248,13 +296,13 @@ Non è stata misurata l'allocazione di memoria né l'uso di CPU.
 
 | Metrica | Stato |
 |---|---|
-| Accuratezza delle operazioni deterministiche | misurata: 34/34 coppie CIEDE2000 entro 1e-4; conversioni sRGB→CIELAB entro 0.05; 87/87 test superati |
+| Accuratezza delle operazioni deterministiche | misurata: 34/34 coppie CIEDE2000 entro 1e-4; conversioni sRGB→CIELAB entro 0.05; 99/99 test superati |
 | Precisione e richiamo su classificazioni con etichette di riferimento | **non misurate**: non esiste un insieme etichettato di ragioni personali/cogenti. Le regole sono verificate su casi scritti a mano, non come percentuale |
 | Operazioni immagine | verificate su un'immagine reale: crop, resize con proporzioni, rotazione, conversione png/jpeg/bmp, limiti e rifiuti |
 | Qualità dei suggerimenti grafici | **non misurata**: non sono stati valutati da designer né su un insieme di prova |
 | Qualità del recupero della memoria | verificata su casi funzionali (recupero, aggiornamento, scadenza, separazione tra utenti), **non** come percentuale su un insieme di prova |
 | Tasso di risposte non supportate dalle informazioni disponibili | verificato per costruzione: un colore non coperto produce "non coperto" e incertezza alta, e non può essere memorizzato come accettato. Non è stato misurato su un campione casuale, perché la tavolozza è chiusa e ogni caso è coperto da un test |
-| Latenza | misurata (§6) per il motore; **non misurata** per le API sotto carico |
+| Latenza | misurata (§6) per il motore; **non misurata** per le API sotto carico. Il ritardo di 900 ms del profilo not friendly non è latenza di calcolo: è una decisione dichiarata e viene verificata come tale |
 | Consumo di risorse | **non misurato** |
 | Percentuale di correzioni risolte correttamente | **non applicabile**: in questa fase nessuna correzione viene risolta automaticamente, quindi non esiste una percentuale da misurare |
 

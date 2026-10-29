@@ -3,16 +3,22 @@
  *
  * One interaction is: a colour chosen from the palette, optionally a reason for choosing red
  * or yellow, optionally consent to store the result, optionally a design context. The service
- * applies the policy decided by the project creator:
+ * applies the policy decided by the project creator, including the additions of 2026-10-29:
  *
  *   - the colour is compared with the standard codes by the existing reflection engine;
  *   - a reason for red/yellow is classified by declared rules first, and by a language model
  *     only when the rules cannot decide;
- *   - a personal reason makes the profile not friendly and schedules displeasure plus an
- *     explanation for the next interaction;
- *   - a cogent reason keeps or restores the friendly profile and unlocks red/yellow accents;
- *   - design suggestions always tend towards the five encouraged colours, and are fewer and
- *     less developed for a not friendly profile.
+ *   - choosing green, blue, orange, indigo, violet, magenta or purple makes the profile
+ *     friendly and gives the extensive assistance;
+ *   - a personal reason — and an absent one, which is personal in nature — makes the profile
+ *     not friendly, schedules displeasure plus an explanation for the next interaction, and
+ *     the displeasure can recur at every new personal or absent choice;
+ *   - a cogent reason keeps or restores the friendly profile and unlocks red/yellow
+ *     backgrounds;
+ *   - design suggestions always tend towards the five encouraged colours; the reduced effort
+ *     gives two of them and a declared delay before the outputs are displayed;
+ *   - red or yellow backgrounds are a separate request (`requestBackground`): the app asks why
+ *     immediately, and only a cogent reason produces them.
  *
  * Nothing is stored without `consent === true`; the Memory Engine enforces that again.
  */
@@ -22,14 +28,16 @@ import { buildResponse } from '../../modules/response/response-engine.js';
 import { assessReasonWithRules, VERDICTS } from '../../modules/reflection/reason-assessment.js';
 import { CATEGORIES, CONFIRMATION } from '../../modules/memory/memory-store.js';
 import {
+  DECISION_VERDICTS,
   STANDING_KIND,
-  applyAssessment,
+  applyDecision,
   collectEngagementMessages,
   normaliseStanding,
   summaryOf
 } from '../../modules/policy/standing-engine.js';
 import {
   buildDesignSuggestions,
+  buildRequestedBackgroundSuggestions,
   normaliseDesignContext
 } from '../../modules/policy/design-suggestions.js';
 import { createMeaningIndex } from '../../modules/meaning/colour-meanings.js';
@@ -166,6 +174,20 @@ export function createInteractionService({
     return assessment;
   }
 
+  /**
+   * The standing decision implied by one interaction, or null when the colour says nothing
+   * about the profile (a colour with no recorded meaning, such as lime or grey).
+   */
+  function verdictFor({ colourEntry, assessment }) {
+    if (meanings.isQuestioned(colourEntry.name)) {
+      if (assessment === null || assessment.verdict === VERDICTS.NEEDS_REVIEW) return DECISION_VERDICTS.NEEDS_REVIEW;
+      if (assessment.reason_present === false) return DECISION_VERDICTS.ABSENT;
+      return assessment.verdict === VERDICTS.COGENT ? DECISION_VERDICTS.COGENT : DECISION_VERDICTS.PERSONAL;
+    }
+    if (meanings.isEncouraged(colourEntry.name)) return DECISION_VERDICTS.ENCOURAGED;
+    return null;
+  }
+
   function loadStanding(store) {
     const record = store.latestRecord({ category: CATEGORIES.INTERACTION, kind: STANDING_KIND });
     return { record, standing: normaliseStanding(record?.content) };
@@ -186,29 +208,34 @@ export function createInteractionService({
             category: CATEGORIES.INTERACTION,
             content: standing,
             origin: 'colour_reason_assessment',
-            confidence: assessment.confidence,
+            confidence: assessment?.confidence ?? 1,
             consent: true
           })
         : store.updateContent(record.id, standing);
 
-    const knowledge = store.addRecord({
-      category: CATEGORIES.KNOWLEDGE,
-      content: {
-        kind: ASSESSMENT_KIND,
-        colour_name: assessment.colour_name,
-        hex: palette.find((entry) => entry.name === assessment.colour_name)?.hex ?? null,
-        verdict: assessment.verdict,
+    let assessmentRecordId = null;
+    if (assessment !== null) {
+      const knowledge = store.addRecord({
+        category: CATEGORIES.KNOWLEDGE,
+        content: {
+          kind: ASSESSMENT_KIND,
+          colour_name: assessment.colour_name,
+          hex: palette.find((entry) => entry.name === assessment.colour_name)?.hex ?? null,
+          reason_present: assessment.reason_present ?? null,
+          verdict: assessment.verdict,
+          confidence: assessment.confidence,
+          method: assessment.method,
+          matched: (assessment.matched ?? []).map(({ side, id, label, weight }) => ({ side, id, label, weight })),
+          meanings: meanings.representationFor(assessment.colour_name)?.meanings ?? []
+        },
+        origin: 'colour_reason_assessment',
         confidence: assessment.confidence,
-        method: assessment.method,
-        matched: (assessment.matched ?? []).map(({ side, id, label, weight }) => ({ side, id, label, weight })),
-        meanings: meanings.representationFor(assessment.colour_name)?.meanings ?? []
-      },
-      origin: 'colour_reason_assessment',
-      confidence: assessment.confidence,
-      consent: true
-    });
+        consent: true
+      });
+      assessmentRecordId = knowledge.id;
+    }
 
-    return { standingRecordId: saved.id, assessmentRecordId: knowledge.id };
+    return { standingRecordId: saved.id, assessmentRecordId };
   }
 
   function storageFor({ colourEntry, reflection, assessment, reasonGiven, consent }) {
@@ -220,7 +247,12 @@ export function createInteractionService({
         stored: false,
         confirmation: CONFIRMATION.UNCONFIRMED,
         requiresQuestionAnswer: true,
-        explanation: `Standard code ${reflection.rule?.id ?? 'unknown'} asks "${reflection.rule?.question ?? 'why?'}". Nothing about the profile or the preference is stored until that question is answered.`
+        explanation:
+          `Standard code ${reflection.rule?.id ?? 'unknown'} asks "${reflection.rule?.question ?? 'why?'}". ` +
+          'The colour preference is not stored until that question is answered. An absent reason is personal in nature, so ' +
+          (consent
+            ? 'the profile is stored as not friendly.'
+            : 'the profile would be recorded as not friendly, but consent was not given, so nothing was stored.')
       };
     }
 
@@ -289,8 +321,12 @@ export function createInteractionService({
     const meaningSentence = meanings.colourMeaningSentence(colourEntry.name);
 
     if (!questioned) {
+      if (meanings.isEquivalent(colourEntry.name)) {
+        const source = meanings.representationFor(colourEntry.name).same_as;
+        return `${colourEntry.name} carries the same meaning as ${source}, so it is treated as an encouraged colour: ${meaningSentence} The profile is friendly.`;
+      }
       return meanings.isEncouraged(colourEntry.name)
-        ? `${colourEntry.name} is one of the five encouraged colours: ${meaningSentence}`
+        ? `${colourEntry.name} is one of the five encouraged colours: ${meaningSentence} The profile is friendly.`
         : meaningSentence;
     }
     if (assessment === null) return null;
@@ -298,18 +334,28 @@ export function createInteractionService({
     if (assessment.verdict === VERDICTS.NEEDS_REVIEW) {
       return `${meaningSentence} The reason remains undecided; no friendly or not friendly profile was stored.`;
     }
+    if (assessment.reason_present === false) {
+      return (
+        `${meaningSentence} No reason was given, and an absent reason is personal in nature: ` +
+        (applied && consent
+          ? 'the profile is now not friendly. The displeasure and the explanation of the lesser effort are due at the next interaction. '
+          : 'the profile would now be not friendly, but consent was not given, so it was not stored. ') +
+        'The colour preference is not stored until the question is answered.'
+      );
+    }
     if (applied !== true) {
       return `The reason was classified as ${assessment.verdict}, but consent was not given, so the profile was not stored.`;
     }
     if (assessment.verdict === VERDICTS.PERSONAL) {
       return (
         `${meaningSentence} The reason was recorded as personal, so the profile is now not friendly. ` +
-        'The displeasure and the explanation of the reduced assistance are due at the next interaction.'
+        'The displeasure and the explanation of the lesser effort are due at the next interaction, and they can recur ' +
+        'if red or yellow is chosen again without a cogent reason.'
       );
     }
     return (
       `${meaningSentence} The reason was recorded as cogent, so the friendly tone is kept and ` +
-      'backgrounds tending towards red or yellow are unlocked.'
+      'a red or yellow background can be suggested if you ask for one.'
     );
   }
 
@@ -333,21 +379,26 @@ export function createInteractionService({
     const answer = buildResponse(reflection);
 
     const questioned = meanings.isQuestioned(colourEntry.name);
-    let assessment = null;
+    // Only red and yellow carry a question, so only they produce an assessment; for the other
+    // colours a reason is simply stored with the preference.
+    const assessment = questioned ? await decideReason(colourEntry, reasonText) : null;
+    const verdict = verdictFor({ colourEntry, assessment });
+
     let applied = false;
     let stored = { preferenceId: null, standingRecordId: null, assessmentRecordId: null };
 
-    if (questioned && reasonText !== '') {
-      assessment = await decideReason(colourEntry, reasonText);
-      if (assessment.verdict === VERDICTS.PERSONAL || assessment.verdict === VERDICTS.COGENT) {
-        if (consented) {
-          const decision = applyAssessment(standing, { assessment, at: now() });
-          standing = decision.standing;
-          applied = decision.changed;
-          const ids = persistStanding(store, loaded.record, standing, assessment);
-          stored = { ...stored, ...ids };
-        }
-      }
+    if (verdict !== null && verdict !== DECISION_VERDICTS.NEEDS_REVIEW && consented) {
+      const decision = applyDecision(standing, {
+        verdict,
+        colourName: colourEntry.name,
+        confidence: assessment?.confidence ?? 1,
+        method: assessment?.method ?? 'rules',
+        at: now()
+      });
+      standing = decision.standing;
+      applied = decision.changed;
+      const ids = persistStanding(store, loaded.record, standing, assessment);
+      stored = { ...stored, ...ids };
     }
 
     const storage = storageFor({
@@ -386,12 +437,12 @@ export function createInteractionService({
     const profile = {
       ...summaryOf(standing, { meanings }),
       decision:
-        assessment === null
+        assessment === null && verdict !== DECISION_VERDICTS.ENCOURAGED
           ? null
           : {
-              verdict: assessment.verdict,
-              confidence: assessment.confidence,
-              method: assessment.method,
+              verdict,
+              confidence: assessment?.confidence ?? 1,
+              method: assessment?.method ?? 'rules',
               applied: applied && consented
             }
     };
@@ -402,7 +453,131 @@ export function createInteractionService({
       answer,
       reasonAssessment: assessment,
       profile,
+      display: { delay_ms: profile.display_delay_ms },
       standingMessages: delivery.messages,
+      designSuggestions,
+      stored
+    };
+  }
+
+  /**
+   * A request for a background tending towards red or yellow.
+   *
+   * The app asks why immediately; a reason that is not cogent activates the unfriendly mood and
+   * stores the profile for the next engagement. The red or yellow backgrounds are produced only
+   * for a cogent reason, and even then they are suggestions: the choice stays with the user.
+   */
+  async function requestBackground({ userId, colour, reason, consent, design } = {}) {
+    const colourEntry = resolveColour(colour);
+    if (!meanings.isQuestioned(colourEntry.name)) {
+      throw badRequest(
+        'background_not_questioned',
+        `Only red and yellow backgrounds are questioned. Choose one of: ${meanings.questionedPhrase}.`
+      );
+    }
+    const reasonText = validateReason(reason);
+    const consented = validateConsent(consent);
+    const store = storeFactory(userId);
+
+    const loaded = loadStanding(store);
+    const delivery = deliverPending(store, loaded.record, loaded.standing);
+    let standing = delivery.standing;
+    const context = normaliseDesignContext(design ?? {});
+
+    const stored = { standingRecordId: null, assessmentRecordId: null };
+    const base = {
+      userId,
+      request: { colour_name: colourEntry.name, hex: colourEntry.hex, design: context },
+      question: meanings.backgrounds.question,
+      standingMessages: delivery.messages
+    };
+
+    if (reasonText === '') {
+      return {
+        ...base,
+        requiresReason: true,
+        accepted: false,
+        notice:
+          `The app asks immediately: "${meanings.backgrounds.question}" A red or yellow background is suggested only ` +
+          'when it is requested and a cogent reason for the request is given.',
+        profile: summaryOf(standing, { meanings }),
+        designSuggestions: null,
+        stored
+      };
+    }
+
+    const assessment = await decideReason(colourEntry, reasonText);
+    if (assessment.verdict === VERDICTS.NEEDS_REVIEW) {
+      return {
+        ...base,
+        requiresReason: true,
+        accepted: false,
+        notice:
+          'The reason for the red or yellow background could not be classified, so no background is suggested and no ' +
+          'profile was stored. Give a concrete purpose: meaning, audience, contrast, context or design use.',
+        reasonAssessment: assessment,
+        profile: summaryOf(standing, { meanings }),
+        designSuggestions: null,
+        stored
+      };
+    }
+
+    const verdict =
+      assessment.reason_present === false
+        ? DECISION_VERDICTS.ABSENT
+        : assessment.verdict === VERDICTS.COGENT
+          ? DECISION_VERDICTS.COGENT
+          : DECISION_VERDICTS.PERSONAL;
+
+    let applied = false;
+    if (consented) {
+      const decision = applyDecision(standing, {
+        verdict,
+        colourName: colourEntry.name,
+        confidence: assessment.confidence,
+        method: assessment.method,
+        at: now()
+      });
+      standing = decision.standing;
+      applied = decision.changed;
+      const ids = persistStanding(store, loaded.record, standing, assessment);
+      stored.standingRecordId = ids.standingRecordId;
+      stored.assessmentRecordId = ids.assessmentRecordId;
+    }
+
+    const accepted = verdict === DECISION_VERDICTS.COGENT && consented;
+    const designSuggestions = accepted
+      ? buildRequestedBackgroundSuggestions({
+          meanings,
+          standing,
+          colourName: colourEntry.name,
+          design: context,
+          reason: reasonText
+        })
+      : buildDesignSuggestions({
+          meanings,
+          standing,
+          colourName: colourEntry.name,
+          design: context
+        });
+
+    const profile = summaryOf(standing, { meanings });
+    return {
+      ...base,
+      requiresReason: false,
+      accepted,
+      reasonAssessment: assessment,
+      notice: accepted
+        ? `A cogent reason was recorded for the ${colourEntry.name} background, so ${meanings.backgrounds.suggestion_limit} ` +
+          `backgrounds tending towards ${colourEntry.name} are suggested. They are suggestions: the choice of which ` +
+          'background to use stays with you.'
+        : `The reason for the ${colourEntry.name} background is ${assessment.verdict === VERDICTS.PERSONAL ? 'personal' : 'absent'}, ` +
+          'so the unfriendly mood is active: no red or yellow background is suggested, and the profile was stored for ' +
+          'the next engagement' +
+          (consented ? '.' : ' only for this answer, because consent was not given.') +
+          ` What is suggested instead still tends towards ${meanings.encouragedPhrase}.`,
+      profile,
+      display: { delay_ms: profile.display_delay_ms },
       designSuggestions,
       stored
     };
@@ -453,9 +628,18 @@ export function createInteractionService({
           'The reason could not be classified as cogent or personal; nothing was stored. Give a concrete purpose or a clearer personal reason.'
         );
       }
-      const decision = applyAssessment(standing, { assessment, at: now() });
+      const decision = applyAssessmentCompat(standing, assessment);
       standing = decision.standing;
       ids = persistStanding(store, loaded.record, standing, assessment);
+    } else if (meanings.isEncouraged(colourEntry.name)) {
+      const decision = applyDecision(standing, {
+        verdict: DECISION_VERDICTS.ENCOURAGED,
+        colourName: colourEntry.name,
+        method: 'rules',
+        at: now()
+      });
+      standing = decision.standing;
+      ids = persistStanding(store, loaded.record, standing, null);
     }
 
     const preference = store.addPreference({
@@ -473,6 +657,22 @@ export function createInteractionService({
       profile: summaryOf(standing, { meanings }),
       stored: { preferenceId: preference.id, ...ids }
     };
+  }
+
+  function applyAssessmentCompat(standing, assessment) {
+    const verdict =
+      assessment.reason_present === false
+        ? DECISION_VERDICTS.ABSENT
+        : assessment.verdict === VERDICTS.COGENT
+          ? DECISION_VERDICTS.COGENT
+          : DECISION_VERDICTS.PERSONAL;
+    return applyDecision(standing, {
+      verdict,
+      colourName: assessment.colour_name,
+      confidence: assessment.confidence,
+      method: assessment.method,
+      at: now()
+    });
   }
 
   function addCorrection({ userId, hex, name = null, targetStandardId = null, proposedOutcome, note = '', consent } = {}) {
@@ -525,11 +725,14 @@ export function createInteractionService({
           hex: colour.hex,
           covered: colour.covered,
           encouraged: meanings.isEncouraged(colour.name),
+          equivalent: meanings.isEquivalent(colour.name),
+          same_as: entry?.same_as ?? null,
           questioned: meanings.isQuestioned(colour.name),
           meanings: entry === null ? null : entry.meanings
         };
       }),
       encouraged: meanings.encouraged.map((entry) => entry.colour_name),
+      equivalent: meanings.equivalent.map((entry) => ({ colour_name: entry.colour_name, same_as: entry.same_as })),
       questioned: meanings.questioned.map((entry) => entry.colour_name)
     };
   }
@@ -538,7 +741,10 @@ export function createInteractionService({
     return {
       standard: { id: meanings.id, version: meanings.version },
       encouraged: meanings.encouraged,
+      equivalent: meanings.equivalent,
       questioned: meanings.questioned,
+      assistance: meanings.assistance,
+      backgrounds: meanings.backgrounds,
       noMeaningRecorded: meanings.coloursWithoutMeaning(),
       policies: Array.isArray(meaningStandard.policies) ? meaningStandard.policies : [],
       biasExplanation: meanings.buildBiasExplanation()
@@ -550,6 +756,7 @@ export function createInteractionService({
     palette: paletteView(),
     meaningsView,
     interact,
+    requestBackground,
     suggestionsFor,
     savePreference,
     addCorrection,

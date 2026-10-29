@@ -1,27 +1,32 @@
 /**
  * Interface checks, run in a real browser.
  *
- * The unit tests in tests/*.test.mjs cover the logic but cannot prove that the page works:
- * a single wrong element id would break the interface while every unit test still passed.
- * This script therefore drives an installed Chrome (no dependency to install, no browser
- * download) over the DevTools Protocol and asserts on the resulting DOM.
+ * The unit tests in tests/*.test.mjs cover the logic but cannot prove that the page works: a
+ * wrong element id, a missing fetch or a delay that is declared but not applied would break the
+ * interface while every unit test still passed. This script therefore drives an installed Chrome
+ * (no dependency to install, no browser download) over the DevTools Protocol and asserts on the
+ * resulting DOM.
  *
- * Requirements: the application must already be served over HTTP.
+ * Since the interface reads the backend, the script starts the backend itself on a temporary
+ * data directory: there is nothing to start by hand.
  *
- *   python -m http.server 8000          (from the project folder)
- *   node tests/browser-checks.mjs http://127.0.0.1:8000/frontend/index.html
+ *   node tests/browser-checks.mjs                        (starts its own server)
+ *   node tests/browser-checks.mjs http://127.0.0.1:3080/frontend/index.html?user=manual
  *
  * Set CHROME_PATH if Chrome is not in a usual location.
- * These checks are not part of `npm test`: they need a browser and a running server.
+ * These checks are not part of `npm test`: they need a browser.
  */
 
 import { spawn } from 'node:child_process';
-import { existsSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const APP = process.argv[2] ?? 'http://127.0.0.1:8000/frontend/index.html';
+import { loadConfig } from '../backend/config.js';
+import { createServer } from '../backend/server.js';
+
 const DEBUG_PORT = Number(process.env.CDP_PORT ?? 9333);
+const GIVEN_APP = process.argv[2];
 
 const CHROME_CANDIDATES = [
   process.env.CHROME_PATH,
@@ -49,6 +54,30 @@ function assert(condition, message, detail = '') {
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // ---------------------------------------------------------------------------------------
+// Backend under test
+// ---------------------------------------------------------------------------------------
+
+async function startBackend() {
+  const dataDir = mkdtempSync(join(tmpdir(), 'chatmt-browser-'));
+  const config = loadConfig({
+    CHATMT_DATA_DIR: dataDir,
+    PORT: '0',
+    CHATMT_LLM_API_BASE: '',
+    CHATMT_LLM_API_KEY: ''
+  });
+  const server = createServer(config);
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+  const user = `browser-${Date.now()}`;
+  return {
+    dataDir,
+    server,
+    user,
+    app: `http://127.0.0.1:${port}/frontend/index.html?user=${user}`
+  };
+}
+
+// ---------------------------------------------------------------------------------------
 // Browser
 // ---------------------------------------------------------------------------------------
 
@@ -69,10 +98,7 @@ async function waitForEndpoint(url, timeoutMs = 20000) {
 async function startChrome() {
   const executable = CHROME_CANDIDATES.find((candidate) => existsSync(candidate));
   if (!executable) {
-    console.error(
-      'Chrome was not found. Set CHROME_PATH to the executable, or run the checks by hand ' +
-        '(see docs/test.md).'
-    );
+    console.error('Chrome was not found. Set CHROME_PATH to the executable, or run the checks by hand.');
     process.exit(1);
   }
 
@@ -144,15 +170,15 @@ function createClient(webSocketUrl) {
 // ---------------------------------------------------------------------------------------
 
 async function main() {
+  const backend = GIVEN_APP === undefined ? await startBackend() : null;
+  const APP = GIVEN_APP ?? backend.app;
+
   try {
     const probe = await fetch(APP);
     if (!probe.ok) throw new Error(`HTTP ${probe.status}`);
   } catch (error) {
-    console.error(
-      `The application is not reachable at ${APP} (${error.message}).\n` +
-        'Start it first: python -m http.server 8000  (from the project folder),\n' +
-        'then run: node tests/browser-checks.mjs http://127.0.0.1:8000/frontend/index.html'
-    );
+    console.error(`The application is not reachable at ${APP} (${error.message}).`);
+    backend?.server.close();
     process.exit(1);
   }
 
@@ -181,7 +207,7 @@ async function main() {
       return result.result.value;
     }
 
-    async function waitFor(expression, expected, timeoutMs = 15000) {
+    async function waitForValue(expression, expected, timeoutMs = 20000) {
       const deadline = Date.now() + timeoutMs;
       let last;
       while (Date.now() < deadline) {
@@ -195,6 +221,7 @@ async function main() {
     const text = (selector) => evaluate(`document.querySelector(${JSON.stringify(selector)})?.textContent ?? ''`);
     const count = (selector) => evaluate(`document.querySelectorAll(${JSON.stringify(selector)}).length`);
     const hidden = (selector) => evaluate(`document.querySelector(${JSON.stringify(selector)})?.hidden ?? null`);
+    const badge = () => evaluate("document.querySelector('#profile .badge')?.textContent ?? ''");
     const click = (selector) =>
       evaluate(`(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (!el) return false; el.click(); return true; })()`);
     const clickButtonWithText = (scope, label) =>
@@ -203,110 +230,167 @@ async function main() {
           `.find((b) => b.textContent.trim().startsWith(${JSON.stringify(label)})); ` +
           `if (!el) return false; el.click(); return true; })()`
       );
+
+    async function waitForText(selector, needle, timeoutMs = 20000) {
+      const deadline = Date.now() + timeoutMs;
+      let last = '';
+      while (Date.now() < deadline) {
+        last = await text(selector);
+        if (last.includes(needle)) return last;
+        await sleep(100);
+      }
+      throw new Error(`timeout waiting for ${selector} to contain ${JSON.stringify(needle)} (last: ${last.slice(0, 200)})`);
+    }
+
+    async function setValue(selector, value) {
+      await evaluate(
+        `(() => { const el = document.querySelector(${JSON.stringify(selector)}); ` +
+          `el.value = ${JSON.stringify(value)}; el.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`
+      );
+    }
+
     const clickPalette = async (name, hex) => {
       const ok = await click(`button[aria-label="${name} ${hex}"]`);
       if (!ok) throw new Error(`palette button not found: ${name} ${hex}`);
-      await sleep(60);
     };
 
-    // ---- 1. the palette -----------------------------------------------------------------
+    // ---- 1. the palette comes from the API ----------------------------------------------
     await client.send('Page.navigate', { url: APP });
-    await waitFor('document.readyState', 'complete');
-    await waitFor("document.querySelectorAll('#palette-covered button').length", 9);
+    await waitForValue('document.readyState', 'complete');
+    await waitForValue("document.querySelectorAll('#palette-covered button').length", 9);
 
     assert((await count('#palette-covered button')) === 9, 'palette lists the 9 colours with a standard code');
     assert((await count('#palette-uncovered button')) === 6, 'palette lists the 6 colours without a standard code');
     assert((await hidden('#app-status')) === true, 'no error banner at start');
+    const expectedUser = new URL(APP).searchParams.get('user') ?? 'local-user';
+    assert((await text('#user-id')) === expectedUser, 'the interface uses the user of the URL', await text('#user-id'));
+    assert((await badge()) === 'friendly', 'a new profile is friendly', await badge());
+    assert((await text('#palette-covered')).includes('same as indigo'), 'magenta is shown as the same as indigo');
 
-    // ---- 2. matching a standard ---------------------------------------------------------
-    await clickPalette('green', '#008000');
-    let answer = await text('#answer');
-    assert(answer.includes('colour-green'), 'answer names the matching standard code', answer.slice(0, 120));
-    assert(answer.includes('accepts this colour'), 'the accepted outcome is stated');
-    assert((await text('#selection')).includes('CIELAB'), 'selection shows the structured representation');
-    assert(answer.includes('tick the consent box'), 'nothing can be stored before consent');
-    assert((await text('#matches')).includes('colour-green'), 'matches panel lists the applied rule');
-    assert((await text('#why')).includes('standards: usage-of-colours v1.0.0'), 'why panel lists the data used');
-
-    // ---- 3. consent and storage ---------------------------------------------------------
+    // ---- 2. consent and a friendly interaction ------------------------------------------
     await click('#consent');
     assert((await text('#consent-note')).includes('Consent given'), 'consent is acknowledged');
-    assert((await text('#answer')).includes('Save as my preferred colour'), 'store button appears after consent');
-    assert((await clickButtonWithText('#answer', 'Save as my preferred colour')) === true, 'store button is clickable');
-    await sleep(80);
-    let memory = await text('#memory-list');
-    assert(memory.includes('Preference: green (#008000)'), 'preference is stored in the memory panel', memory.slice(0, 200));
-    assert(memory.includes('confirmation: confirmed'), 'the stored preference is confirmed');
-    assert((await text('#memory-status')).includes('records: 1'), 'memory status counts one record');
-    assert((await text('#answer')).includes('exactly the same colour'), 'after storing, the distance is reported as zero');
 
-    // ---- 4. persistence and consent after a reload --------------------------------------
-    await client.send('Page.navigate', { url: APP });
-    await waitFor("document.querySelectorAll('#palette-covered button').length", 9);
-    memory = await text('#memory-list');
-    assert(memory.includes('Preference: green (#008000)'), 'the preference survives a page reload');
-    assert((await evaluate("document.querySelector('#consent').checked")) === false, 'consent is asked again after a reload');
-    await clickPalette('blue', '#0000FF');
-    assert((await text('#answer')).includes('tick the consent box'), 'without consent no storage button is offered');
-    await click('#consent');
+    const startedAt = Date.now();
+    await clickPalette('green', '#008000');
+    let answer = await waitForText('#answer', 'colour-green');
+    const friendlyElapsed = Date.now() - startedAt;
+    assert(answer.includes('accepts this colour'), 'the accepted outcome is stated', answer.slice(0, 120));
+    assert((await badge()) === 'friendly', 'choosing green keeps the friendly profile');
+    assert((await hidden('#delay-notice')) === true, 'a friendly profile is not delayed');
+    assert(friendlyElapsed < 3000, 'the friendly answer is not held back', `${friendlyElapsed} ms`);
+    await waitForValue("document.querySelectorAll('#suggestions .suggestion').length", 5);
+    assert((await count('#suggestions .suggestion')) === 5, 'a friendly profile receives five suggestions');
+    assert((await text('#profile')).includes('background suggestions: 5'), 'the profile states the number of suggestions');
+    assert((await text('#profile')).includes('delay before the outputs: 0 ms'), 'the profile states no delay');
+    await waitForText('#memory-status', 'records: 2');
+    assert((await text('#memory-status')).includes('records: 2'), 'the preference and the profile are stored');
 
-    // ---- 5. comparing with the stored preference ----------------------------------------
-    answer = await text('#answer');
-    assert(answer.includes('colour-blue'), 'a second selection is compared with the standard');
-    assert(answer.includes('stored preference is green (#008000)'), 'the answer compares against the stored preference');
-    assert(answer.includes('Replace my stored preference'), 'the answer asks before replacing, instead of overwriting');
-
-    // ---- 6. a colour the standard requires to be questioned -----------------------------
+    // ---- 3. red without a reason: the question, the unfriendly mood and the delay -------
+    const redStartedAt = Date.now();
     await clickPalette('red', '#FF0000');
-    answer = await text('#answer');
-    assert(answer.includes('Why did you choose Red?'), 'the question of the source file is asked');
-    assert((await hidden('#clarification')) === false, 'the clarification panel is shown');
-    assert(answer.includes('Answer the question first'), 'storing is blocked until the question is answered');
-    await evaluate("document.querySelector('#clarification-text').value = 'because it was the colour of my first bicycle'");
-    await click('#clarification-send');
-    await sleep(60);
-    assert((await hidden('#clarification')) === true, 'the clarification panel closes after the answer');
-    assert((await text('#answer')).includes('first bicycle'), 'the answer is echoed back');
-    assert((await clickButtonWithText('#answer', 'Replace my stored preference')) === true, 'an explicit replace button is offered');
-    await sleep(80);
-    memory = await text('#memory-list');
-    assert(memory.includes('Preference: red (#FF0000)'), 'the stored preference was replaced');
-    assert(memory.includes('first bicycle'), 'the answer to the question is stored with the preference');
-    assert((await text('#memory-status')).includes('records: 1'), 'replacing keeps a single preference record');
+    answer = await waitForText('#answer', 'Why did you choose Red?');
+    const redElapsed = Date.now() - redStartedAt;
+    assert((await hidden('#reason-block')) === false, 'the reason panel appears for red');
+    assert((await text('#reason-label')).includes('Why did you choose Red?'), 'the standard question is asked');
+    assert(answer.includes('absent reason is personal'), 'the notice says an absent reason is personal', answer.slice(0, 300));
+    assert((await badge()) === 'not_friendly', 'an absent reason makes the profile not friendly');
+    assert((await hidden('#delay-notice')) === false, 'the lesser effort announces its delay');
+    assert((await text('#delay-notice')).includes('900 ms'), 'the declared delay is shown');
+    assert(redElapsed >= 850, 'the answer really waits for the declared delay', `${redElapsed} ms`);
+    await waitForValue("document.querySelectorAll('#suggestions .suggestion').length", 2);
+    assert((await count('#suggestions .suggestion')) === 2, 'a not friendly profile receives two suggestions');
+    assert((await text('#why')).includes('measured delay'), 'the measured delay is reported in the "why" panel');
 
-    // ---- 7. a colour with no standard ---------------------------------------------------
+    // ---- 4. a personal reason arms the displeasure for the next interaction -------------
+    await setValue('#reason-input', 'I just like it');
+    await click('#reason-send');
+    await waitForText('#answer', 'personal');
+    assert((await badge()) === 'not_friendly', 'a personal reason keeps the profile not friendly');
+    assert((await text('#standing-messages')).includes('Nothing is due'), 'the displeasure is due at the next interaction, not now');
+
+    // ---- 5. choosing an encouraged colour restores the friendly profile -----------------
+    await clickPalette('blue', '#0000FF');
+    await waitForText('#answer', 'colour-blue');
+    await waitForText('#standing-messages', 'personal-reason-displeasure');
+    assert((await text('#standing-messages')).includes('not pleased'), 'the displeasure is expressed at the next interaction');
+    assert((await text('#standing-messages')).includes('900 ms'), 'the explanation of the lesser effort mentions the delay');
+    assert((await badge()) === 'friendly', 'choosing blue restores the friendly profile');
+    assert((await hidden('#delay-notice')) === true, 'a friendly profile is no longer delayed');
+
+    // ---- 6. a red or yellow background must be requested, and the app asks why ---------
+    assert((await text('#chosen-background')).includes('No background chosen'), 'the app has not chosen a background');
+    await evaluate("document.querySelector('#background-colour').value = 'red'");
+    await click('#background-ask');
+    await waitForValue("document.querySelector('#background-question').hidden", false);
+    await waitForText('#background-question-label', 'Why do you want a red or yellow background?');
+    assert(
+      (await text('#background-question-label')).includes('Why do you want a red or yellow background?'),
+      'the app asks immediately why',
+      await text('#background-question-label')
+    );
+    assert((await text('#background-result')).includes('asks immediately'), 'the request is acknowledged with the question');
+
+    await setValue('#background-reason', 'I just like it like that');
+    await click('#background-send');
+    await waitForText('#background-result', 'unfriendly mood');
+    await waitForValue("document.querySelector('#profile .badge').textContent", 'not_friendly');
+    assert((await badge()) === 'not_friendly', 'a non cogent reason for the background activates the unfriendly mood');
+    await waitForValue("document.querySelectorAll('#background-result .suggestion').length", 2);
+    assert((await count('#background-result .suggestion')) === 2, 'the fallback suggestions are the reduced ones');
+    assert((await text('#background-result')).includes('requested: red') === false, 'no red background is suggested');
+
+    await evaluate("document.querySelector('#background-colour').value = 'yellow'");
+    await click('#background-ask');
+    await waitForValue("document.querySelector('#background-question').hidden", false);
+    await setValue('#background-reason', 'It signals attention on the warning sign and the audience needs that');
+    await click('#background-send');
+    await waitForText('#background-result', 'stays with you');
+    assert((await badge()) === 'friendly', 'a cogent reason restores the friendly profile');
+    await waitForValue("document.querySelectorAll('#background-result .suggestion').length", 3);
+    assert((await count('#background-result .suggestion')) === 3, 'a cogent reason produces the requested backgrounds');
+    assert((await text('#background-result')).includes('requested: yellow'), 'the suggestions tend towards the requested colour');
+    assert((await hidden('#delay-notice')) === true, 'no delay for the friendly profile');
+
+    // ---- 7. the app suggests, the user chooses ------------------------------------------
+    assert((await text('#chosen-background')).includes('No background chosen'), 'still no background chosen by the app');
+    await clickButtonWithText('#background-result', 'Use this background');
+    await waitForText('#chosen-background', 'You chose');
+    assert((await text('#chosen-background')).includes('did not choose it'), 'the note says the app did not choose it');
+    assert(
+      (await evaluate("document.querySelector('#background-preview').getAttribute('style') ?? ''")).includes('gradient'),
+      'the preview is painted only after the press'
+    );
+
+    // ---- 8. the design context updates the suggestions ---------------------------------
+    await evaluate("document.querySelector('#design-type').value = 'poster'");
+    await click('#design-update');
+    await waitForText('#suggestions', 'poster');
+    assert((await text('#suggestions')).includes('poster background'), 'the design type reaches the suggestions');
+
+    // ---- 9. correction and memory -------------------------------------------------------
     await clickPalette('lime', '#00FF00');
-    answer = await text('#answer');
-    assert(answer.includes('No standard code covers'), 'an uncovered colour is declared as such', answer.slice(0, 120));
-    assert((await text('#matches')).includes('high'), 'uncertainty is declared as high');
-    assert((await text('#matches')).includes('Uncertainty'), 'uncertainty reasons are listed');
-    assert(answer.includes('unconfirmed observation'), 'the button says the value will be an unconfirmed observation');
-    assert((await clickButtonWithText('#answer', 'Replace my stored preference')) === true, 'an uncovered colour can still be stored');
-    await sleep(80);
-    memory = await text('#memory-list');
-    assert(memory.includes('Preference: lime (#00FF00)'), 'the uncovered colour is stored', memory.slice(0, 200));
-    assert(memory.includes('confirmation: unconfirmed'), 'an uncovered colour is stored as unconfirmed, not as accepted');
-
-    // ---- 8. recording a correction ------------------------------------------------------
+    await waitForText('#answer', 'No standard code covers');
     await evaluate("document.querySelector('#correction-outcome').value = 'accepted'");
-    await evaluate("document.querySelector('#correction-note').value = 'I want lime to be accepted'");
+    await setValue('#correction-note', 'I want lime to be accepted');
     await click('#correction-record');
-    await sleep(80);
-    const matches = await text('#matches');
-    assert(matches.includes('correction-against-standard'), 'the correction is reported as a contradiction');
-    assert(matches.includes('has not been changed automatically'), 'the standard is not changed automatically');
-    memory = await text('#memory-list');
-    assert(memory.includes('Correction: #00FF00 should be "accepted"'), 'the correction is stored as its own record');
-    assert((await text('#memory-status')).includes('records: 2'), 'the memory now holds two records');
+    await waitForText('#memory-list', 'Correction: #00FF00 should be "accepted"');
+    assert((await text('#memory-list')).includes('note: "I want lime to be accepted"'), 'the correction note is stored');
+    await waitForText('#matches', 'correction-against-standard');
+    assert((await text('#matches')).includes('has not been changed automatically'), 'the standard is not changed automatically');
 
-    // ---- 9. deletion --------------------------------------------------------------------
+    const recordsBefore = Number((await text('#memory-status')).match(/records: (\d+)/)?.[1] ?? '0');
     await clickButtonWithText('#memory-list', 'Delete');
-    await sleep(80);
-    assert((await text('#memory-status')).includes('records: 1'), 'deleting one record removes exactly one');
+    await waitForText('#memory-status', `records: ${recordsBefore - 1}`);
+    assert(
+      Number((await text('#memory-status')).match(/records: (\d+)/)?.[1]) === recordsBefore - 1,
+      'deleting one record removes exactly one'
+    );
     await click('#clear-memory');
-    await sleep(80);
+    await waitForText('#memory-list', 'Empty');
     assert((await text('#memory-list')).includes('Empty'), 'clearing removes every record');
-    assert((await evaluate("window.localStorage.getItem('chatmt.memory.local-user')")) === null, 'the storage entry is removed');
+    await waitForValue("document.querySelector('#profile .badge').textContent", 'friendly');
+    assert((await badge()) === 'friendly', 'without a stored profile the user is friendly again');
 
     // ---- 10. no silent errors -----------------------------------------------------------
     assert(client.exceptions.length === 0, 'no uncaught exception in the browser', client.exceptions.join(' | '));
@@ -316,6 +400,10 @@ async function main() {
     client.socket.close();
   } finally {
     chrome.kill();
+    if (backend !== null) {
+      await new Promise((resolve) => backend.server.close(resolve));
+      rmSync(backend.dataDir, { recursive: true, force: true });
+    }
   }
 }
 

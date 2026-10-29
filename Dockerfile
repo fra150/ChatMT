@@ -1,30 +1,39 @@
-# ChatMT — container image for the Phase 2 prototype.
+# ChatMT — container image.
 #
-# The application runs entirely in the browser: the modules under modules/ are ES modules
-# loaded by the page, and the memory lives in the browser storage of the visitor. There is
-# therefore no build step and no application server in this image. nginx only serves the
-# project files, which is what ES modules and fetch() require (opening index.html directly
-# from the file system does not work because of the browser security rules).
+# The interface is an ES-module page that reads the API, so an application server is required:
+# nginx serving the files alone would show a page whose every request fails. This image
+# therefore runs the Node backend, which answers /api and serves /frontend on the same origin.
 #
 # Build:  docker build -t chatmt .
-# Run:    docker run --rm -p 8080:80 chatmt
+# Run:    docker run --rm -p 8080:3080 chatmt
 # Open:   http://localhost:8080/          (redirects to /frontend/)
 
-FROM nginx:alpine
+FROM node:22-alpine
 
 LABEL org.opencontainers.image.title="ChatMT" \
-      org.opencontainers.image.description="Reflective and regenerative AI prototype — colour preference engine (phase 2)" \
+      org.opencontainers.image.description="Reflective and regenerative AI prototype — colour preference engine, profile and background assistant" \
       org.opencontainers.image.source="https://github.com/ChatMT-23/ChatMT"
 
-# The whole project is served as it is: no copy of the sources, no generated bundle.
-COPY . /usr/share/nginx/html
+WORKDIR /app
 
-# Replace the default site: send the root URL to the application, and answer 404 for
-# anything that does not exist instead of showing the nginx landing page.
-RUN printf 'server {\n  listen 80;\n  listen [::]:80;\n  server_name _;\n  root /usr/share/nginx/html;\n  index index.html;\n  location = / { return 302 /frontend/; }\n  location / { try_files $uri $uri/ =404; }\n}\n' \
-      > /etc/nginx/conf.d/default.conf
+# Only the declared dependency is installed, from the lockfile, with no dev dependencies.
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev && npm cache clean --force
 
-EXPOSE 80
+COPY . .
 
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s \
-  CMD wget --quiet --tries=1 --spider http://localhost/frontend/index.html || exit 1
+# The server listens on all interfaces inside the container. The memory is written to /data,
+# which is a volume so that it survives the container.
+ENV CHATMT_HOST=0.0.0.0 \
+    PORT=3080 \
+    CHATMT_DATA_DIR=/data
+
+RUN mkdir -p /data
+VOLUME ["/data"]
+
+EXPOSE 3080
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s \
+  CMD wget --quiet --tries=1 --spider http://127.0.0.1:3080/api/health || exit 1
+
+CMD ["node", "backend/server.js"]

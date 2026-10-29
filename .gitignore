@@ -11,3 +11,4 @@ data/
 # Local secrets: never commit an API key.
 .env
 .env.*
+.gstack/

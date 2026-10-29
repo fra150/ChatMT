@@ -1,12 +1,13 @@
 # ChatMT — Architettura (Fase 2 e backend)
 
-- **Stato:** implementata e verificata (87 test automatici + 47 controlli nel browser)
-- **Data:** 26 ottobre 2026 (fase 2), 28 ottobre 2026 (backend)
-- **Ambito:** confronto di un colore scelto dalla tavolozza con i codici standard, memoria delle preferenze e delle correzioni, giudizio della ragione per rosso/giallo, profilo friendly/not_friendly, suggerimenti grafici, operazioni immagine
+- **Stato:** implementata e verificata (99 test automatici + 51 controlli nel browser)
+- **Data:** 26 ottobre 2026 (fase 2), 28 ottobre 2026 (backend), 29 ottobre 2026 (regole nuove, interfaccia sulle API, redesign “Ink Register” e passata di correzione)
+- **Ambito:** confronto di un colore scelto dalla tavolozza con i codici standard, memoria delle preferenze e delle correzioni, giudizio della ragione per rosso/giallo, profilo friendly/not_friendly con ritardo e displeasure ricorrente, suggerimenti grafici e sfondi richiesti, operazioni immagine, interfaccia servita dallo stesso server delle API e ridisegnata secondo il linguaggio “Ink Register”
 
-> Il §1 descrive la fase 2, che resta valida e non è stata riscritta. Il backend aggiunge i
-> pezzi del §8 e sostituisce la decisione "nessun backend" del §4, che valeva per quella fase.
-> L'interfaccia continua a usare `localStorage`: il collegamento alle API non è stato fatto.
+> Il §1 descrive la fase 2, che resta valida per i moduli e non è stata riscritta. Il backend
+> aggiunge i pezzi del §8 e sostituisce la decisione "nessun backend" del §4, che valeva per
+> quella fase. Da questa versione **l'interfaccia non usa più `localStorage`**: legge e scrive
+> solo attraverso le API, quindi il §1 va letto con il §8.6 come sorgente dei dati.
 
 ---
 
@@ -118,7 +119,7 @@ Le tre categorie non usate sono dichiarate nel codice e mostrate nell'interfacci
 
 ### Adattatore di archiviazione
 
-Il magazzino non conosce il browser: riceve un `adapter` con `getItem`, `setItem`, `removeItem`. Nel browser è `window.localStorage`; nei test è un `Map` in memoria (`createVolatileAdapter()`). Se `localStorage` non è disponibile (modalità privata, quota), l'interfaccia passa all'adattatore volatile e **avvisa** che la memoria è temporanea, invece di far credere che i dati siano stati salvati.
+Il magazzino non conosce il browser: riceve un `adapter` con `getItem`, `setItem`, `removeItem`. Nei test è un `Map` in memoria (`createVolatileAdapter()`); il backend usa l'adattatore su file. In fase 2 l'interfaccia usava `window.localStorage`; da questa versione non lo usa più, ma il modulo resta lo stesso e lo stesso contratto vale per il file su disco.
 
 ---
 
@@ -173,7 +174,9 @@ I punti di innesto sono già definiti, così le fasi successive non dovranno ris
 - Nessuna scrittura senza `consent === true`: il controllo è nel Memory Engine, non solo nell'interfaccia, quindi vale anche per un uso futuro da script.
 - I record sono separati per `user_id` e la chiave di archiviazione contiene l'identificativo dell'utente.
 - `clear()` elimina tutti i record dell'utente corrente e rimuove la voce dall'archivio.
-- **Frontend:** nessun dato lascia il dispositivo; non esiste alcuna chiave API nel browser.
+- **Frontend:** nessun dato è tenuto dal browser: la pagina non ha più un archivio proprio, non
+esiste alcuna chiave API nel browser e non c'è alcun percorso `localStorage`. L'utente viene
+scelto con `?user=`, quindi cambiarlo cambia la memoria consultata.
 - **Backend:** i dati restano in `data/chatmt.memory.<userId>.json`. Se viene configurata una chiave, solo la ragione ambigua viene inviata al provider LLM; senza chiave nessun testo esce dalla macchina. Il backend non ha autenticazione e va usato su localhost (vedi §8.5).
 - Se l'archivio è illeggibile, il sistema **solleva un errore** invece di mostrare una memoria vuota: un dato danneggiato non deve sembrare un dato assente.
 
@@ -193,7 +196,7 @@ POST /api/interactions
 [backend/services/interaction-service.js]
    |  messaggi in sospeso -> reflect() -> buildResponse()
    |  -> reason-assessment (regole) -> llm-classifier solo se indeciso
-   |  -> standing-engine -> design-suggestions
+   |  -> standing-engine (decisione) -> design-suggestions
    v
 [modules/memory/memory-store.js] + [backend/storage/file-adapter.js]
    |  preferenza, correzione, profilo (interaction), valutazione (knowledge)
@@ -202,7 +205,8 @@ data/chatmt.memory.<userId>.json
 ```
 
 La regola di separazione resta la stessa: il calcolo e le decisioni vivono nei moduli, il server
-fa routing e validazione, l'interfaccia non calcola nulla.
+fa routing e validazione, l'interfaccia non calcola nulla. Anche il **ritardo** del lesser effort
+viene dichiarato dal server (`display.delay_ms`) e solo applicato dal browser.
 
 ### 8.2 Moduli aggiunti
 
@@ -210,13 +214,15 @@ fa routing e validazione, l'interfaccia non calcola nulla.
 |---|---|---|
 | `modules/meaning/colour-meanings.js` | indicizza e valida i significati, dichiara i colori senza significato | `createMeaningIndex(standard, {palette})` → `encouraged`, `questioned`, `assistance`, `representationFor`, `isEncouraged`, `isQuestioned`, `coloursWithoutMeaning`, `buildBiasExplanation` |
 | `modules/reflection/reason-assessment.js` | regole dichiarate per la ragione | `assessReasonWithRules({colourName, reason})`, `VERDICTS`, `METHODS`, `PERSONAL_MARKERS`, `COGENT_MARKERS`, `DECISION_THRESHOLDS` |
-| `modules/policy/standing-engine.js` | transizioni del profilo e messaggi differiti | `createDefaultStanding`, `normaliseStanding`, `applyAssessment`, `collectEngagementMessages`, `assistanceFor`, `summaryOf` |
-| `modules/policy/design-suggestions.js` | sfondi deterministici tendenti ai cinque colori | `buildDesignSuggestions`, `normaliseDesignContext`, `DESIGN_TYPES`, `BACKGROUND_STYLES` |
+| `modules/policy/standing-engine.js` | transizioni del profilo e messaggi differiti | `createDefaultStanding`, `normaliseStanding`, `applyDecision`, `applyAssessment`, `DECISION_VERDICTS`, `collectEngagementMessages`, `assistanceFor`, `summaryOf` |
+| `modules/policy/design-suggestions.js` | sfondi deterministici tendenti ai cinque colori, e sfondi richiesti | `buildDesignSuggestions`, `buildRequestedBackgroundSuggestions`, `normaliseDesignContext`, `DESIGN_TYPES`, `BACKGROUND_STYLES` |
 | `modules/design/image-operations.js` | validazione delle operazioni | `parseOperations`, `assertCropFits`, `resolveResize`, `normaliseFormat`, `OUTPUT_FORMATS`, `IMAGE_LIMITS` |
 | `backend/llm-classifier.js` | seconda fase per le ragioni ambigue | `createLlmClassifier({apiBase, apiKey, model, timeoutMs})` → `configured`, `classify` |
-| `backend/services/interaction-service.js` | orchestra riflessione, politica, memoria, suggerimenti | `interact`, `suggestionsFor`, `savePreference`, `addCorrection`, `standingFor`, `memoryFor`, `deleteRecord`, `clearMemory` |
+| `backend/services/interaction-service.js` | orchestra riflessione, politica, memoria, suggerimenti | `interact`, `requestBackground`, `suggestionsFor`, `savePreference`, `addCorrection`, `standingFor`, `memoryFor`, `deleteRecord`, `clearMemory` |
 | `backend/services/image-service.js` | crop, resize, rotate, conversione | `createImageService(limits)` → `transform` |
 | `backend/storage/file-adapter.js` | adattatore sincrono su file con scritture atomiche | `createFileAdapter({directory})`, `fileNameForKey`, `StorageError` |
+| `backend/static-files.js` | serve l'interfaccia sulla stessa origine | `readStaticFile({root, urlPath})`, `resolveWithin(root, pathname)`, `contentTypeFor(file)`; MIME espliciti anche per `.ttf`, `.otf` e `.woff` |
+| `frontend/js/app.js` | solo interfaccia: nessun calcolo, nessun archivio | client HTTP verso `/api`, rendering del DOM con `textContent`, token di richiesta e specchio conversazionale |
 
 ### 8.3 Dati e categorie
 
@@ -238,7 +244,15 @@ illeggibile produce `503 storage_unavailable`.
 | Nessuna scrittura senza `consent: true`, anche per il profilo | è la regola non negoziabile del progetto | salvare il profilo automaticamente perché il creatore ha detto "store the data", che avrebbe violato la regola sul consenso |
 | Una ragione indecisa non cambia il profilo | un caso dubbio non deve essere trattato come personale | classificare per esclusione, che avrebbe punito una ragione solo perché ambigua |
 | 5 suggerimenti friendly, 2 not friendly | traduce "lesser graphic suggestions" in un numero verificabile, modificabile nello standard | un numero scelto nel codice, non revisionabile senza toccare il programma |
-| Gli sfondi rosso/giallo restano un accento | il testo chiede che i suggerimenti tendano ai cinque colori; l'accento soddisfa anche il caso cogente | sfondi interamente rossi o gialli, che avrebbero contraddetto la richiesta dei cinque colori |
+| Gli sfondi rosso/giallo restano un accento nei suggerimenti ordinari | il testo chiede che i suggerimenti tendano ai cinque colori; l'accento soddisfa anche il caso cogente | sfondi interamente rossi o gialli, che avrebbero contraddetto la richiesta dei cinque colori |
+| Il lesser effort aggiunge un ritardo di 900 ms | il creatore del 29 ottobre ha spiegato che significa "a little time delay before outputs are displayed" **e** meno suggerimenti: il ritardo è nel file standard, non nel codice, e viene mostrato dichiarato e misurato | rallentare senza dichiararlo, che avrebbe reso impossibile distinguere una decisione da un difetto |
+| Il ritardo è dichiarato dal server e applicato dal browser | l'API resta corretta per qualunque client e l'attesa è visibile nel punto in cui serve; i test la misurano realmente | mettere `sleep` nel server, che avrebbe occupato una connessione e reso i test lenti |
+| Scegliere un colore incoraggiato riporta il profilo a friendly | deciso dal creatore il 29 ottobre; un colore incoraggiato non revoca però uno sblocco già ottenuto con una ragione cogente | riportare a friendly solo via ragione, che era la regola precedente |
+| Una ragione assente è personale | deciso dal creatore il 29 ottobre; la preferenza resta però non salvata finché la domanda non riceve risposta | trattare l'assenza come caso non deciso, che era la regola precedente |
+| La displeasure si riarma a ogni decisione personale o assente | "Displeasure can recur"; dopo la consegna i due flag tornano falsi e solo una nuova decisione li riaccende | consegnarla una volta sola, che era la regola precedente |
+| Gli sfondi rosso/giallo hanno un ingresso separato (`POST /api/design/backgrounds`) | il creatore ha chiesto che siano suggeriti **solo su richiesta** e con una ragione cogente per la richiesta stessa: un flag non basta, serve un percorso che non possa essere saltato | lasciare che sia un parametro dell'interazione ordinaria, che avrebbe permesso di ottenerli senza la domanda |
+| `choice.by = "user"` in ogni risposta di suggerimenti | "The app should only suggest backgrounds ... and not choose": la scelta non può essere implicita | applicare automaticamente il primo sfondo, che avrebbe contraddetto la richiesta |
+| L'interfaccia è servita dal backend sulla stessa origine | una sola origine rimuove il CORS dal percorso normale e rende `npm start` l'unico comando necessario | due processi da avviare e CORS da configurare, con la pagina che non può funzionare da sola perché non ha più dati propri |
 | Suggerimenti come CSS + SVG, non immagini generate | sono ispezionabili, deterministici e testabili; non esiste un modello di image generation in questo progetto | simulare immagini generate, che sarebbe stato dichiarare una capacità inesistente |
 | Immagini in base64 nel JSON | Node non offre multipart; una dipendenza in più non risolveva un problema di questa fase | parsing multipart scritto a mano, più codice non necessario |
 | Solo png, jpeg e bmp | sono i formati verificati dai test; l'ingresso è controllato dai byte iniziali | dichiarare gif, tiff o webp senza test che li coprano |
@@ -247,8 +261,8 @@ illeggibile produce `503 storage_unavailable`.
 
 1. **Nessuna autenticazione:** chi raggiunge il server può usare qualsiasi `userId`. Ascolto su
    `127.0.0.1` per default; non esporre senza autenticazione, autorizzazione, rate limiting e HTTPS.
-2. **Frontend non collegato:** le API sono documentate in `docs/backend-api.md`, ma l'interfaccia
-   continua a leggere e scrivere `localStorage`.
+2. **L'interfaccia non funziona senza il backend:** non ha dati propri, quindi se il server non
+   risponde mostra un errore esplicito e non finge di aver salvato qualcosa.
 3. **Qualità del giudizio non misurata:** non esiste un insieme etichettato di ragioni; le soglie
    sono una convenzione. Il modello LLM è testato con un endpoint simulato, non con una chiave reale.
 4. **Nessun modello di image generation:** i suggerimenti sono specifiche CSS/SVG.
@@ -258,3 +272,66 @@ illeggibile produce `503 storage_unavailable`.
 7. **Le regole lessicali sono in inglese.** Una ragione scritta in italiano che non contiene i
    pattern dichiarati resta `needs_review`; senza una chiave LLM non viene classificata e non
    viene salvata.
+
+### 8.6 L'interfaccia sulle API (29 ottobre 2026)
+
+```
+browser
+   |  GET  /frontend/...            <- backend/static-files.js (solo la cartella frontend)
+   |  GET  /api/palette, /api/design/types
+   |  POST /api/interactions        -> risposta + profilo + suggerimenti + display.delay_ms
+   |  POST /api/design/backgrounds  -> domanda, poi esito
+   |  POST /api/design/suggestions  -> suggerimenti senza scritture
+   |  GET  /api/users/:id/standing|memory, DELETE memory[/:recordId]
+   |  POST /api/users/:id/corrections
+   v
+[frontend/js/app.js]  nessun calcolo, nessun archivio: solo fetch e DOM con textContent
+```
+
+Scelte registrate:
+
+- **Nessun `localStorage`.** La pagina non tiene una copia dei dati: due copie che possono
+divergere erano un difetto, non una comodità. L'unica cosa che ricorda è l'utente nell'URL.
+- **Nessun `innerHTML`.** L'SVG di un suggerimento è una stringa prodotta dal server, quindi non
+viene mai inserito nel documento: l'anteprima usa il gradiente CSS equivalente (un valore di
+stile) e il markup viene citato solo come testo.
+- **Il ritardo è applicato dal client**, leggendo `display.delay_ms`, e il tempo realmente atteso
+viene misurato con `performance.now()` e mostrato accanto al valore dichiarato. Il pannello
+"Why this answer" riporta entrambi.
+- **L'app non sceglie.** Ogni suggerimento ha un pulsante "Use this background"; la preview viene
+dipinta solo dopo quel gesto, e il pannello dice esplicitamente che la scelta è dell'utente.
+- **Errori visibili.** Se il backend non risponde, la pagina mostra il messaggio e dichiara che
+niente è stato salvato; non esiste un percorso che simula il successo.
+
+### 8.7 L'interfaccia “Ink Register” e la passata di correzione (29 ottobre 2026)
+
+Il redesign ha sostituito la griglia di pannelli con una metafora di stampa: un **job ticket**
+sticky a sinistra (profilo, memoria, setup del flyer; quattro blocchi numerati), un **proof
+sheet** a destra con otto piatti numerati, una striscia spettrale nell'intestazione e uno specimen
+che prende il colore selezionato. I font sono locali (`Gloock`, `Instrument Sans`, `Geist Mono`,
+licenze OFL in `frontend/fonts/`); la pagina non carica webfont remoti.
+
+Il vincolo era conservare ogni contratto osservabile: id, classi e testi usati da `app.js` e dai
+51 controlli del browser. Il thread della chat è uno specchio; i pannelli di dettaglio restano la
+fonte autorevole. Il DOM mette `<main>` prima di `<aside class="ticket">`; su desktop il grid
+assegna al ticket la colonna 1 e al main la colonna 2, mentre sotto 960 px l'ordine naturale del
+DOM è anche l'ordine visivo.
+
+La passata di correzione ha riguardato sei classi di difetti:
+
+1. **Static serving.** `.ttf`, `.otf` e `.woff` non erano nella tabella MIME: i font venivano
+   serviti come `application/octet-stream` con `nosniff`. Ora hanno `font/ttf`, `font/otf` e
+   `font/woff`; il test backend verifica status, MIME e `nosniff`.
+2. **Stato della conversazione.** `showTyping()` parte all'inizio della richiesta e
+   `hideTyping()` è chiamato anche nel ramo di errore; ogni ragione aggiunge una sola bolla.
+3. **Fuori ordine.** Un token monotono per richiesta impedisce a una risposta vecchia di
+   sovrascrivere la selezione nuova, anche durante il ritardo del lesser effort.
+4. **Pannelli obsoleti.** Una nuova selezione azzera reason, delay, correction, background
+   question, chosen background e preview.
+5. **Contesto dello sfondo.** La domanda memorizza il colore richiesto: cambiare il select dopo
+   non cambia il colore della richiesta.
+6. **Accessibilità e layout.** Ripristinato `:focus-visible` sui campi, corretti i bordi della
+   palette a due e una colonna, rispettato `prefers-reduced-motion` nello scroll della chat.
+
+Lo scroll della chat segue la conversazione solo quando il thread è già visibile, per non
+strappare la pagina via mentre si sceglie un colore.

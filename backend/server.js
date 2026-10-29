@@ -5,7 +5,11 @@
  * not have: shared memory on disk, the red/yellow reason policy, the friendliness profile,
  * design suggestions and the four image operations.
  *
- * Start:  node backend/server.js
+ * It also serves the interface from /frontend, on the same origin as /api: one command starts
+ * the whole application.
+ *
+ * Start:  npm start
+ * Open:   http://127.0.0.1:3080/
  * Docs:   docs/backend-api.md
  */
 
@@ -20,8 +24,10 @@ import { createLlmClassifier } from './llm-classifier.js';
 import { createInteractionService } from './services/interaction-service.js';
 import { createImageService } from './services/image-service.js';
 import { ApiError, badRequest, notFound } from './errors.js';
+import { readStaticFile } from './static-files.js';
 
 import { PALETTE } from '../modules/color_engine/palette.js';
+import { DESIGN_TYPES } from '../modules/policy/design-suggestions.js';
 import { ConsentRequiredError, MemoryStore, RecordNotFoundError } from '../modules/memory/memory-store.js';
 import { InvalidColourError } from '../modules/color_engine/color-engine.js';
 import { UnsupportedInputError } from '../modules/reflection/reflection-engine.js';
@@ -124,7 +130,8 @@ export function createServer(config = loadConfig()) {
           meanings: { id: standards.meanings.id, version: standards.meanings.version }
         },
         llm: { configured: llm.configured, model: llm.configured ? llm.model : null },
-        storage: { type: 'json-file' }
+        storage: { type: 'json-file' },
+        frontend: { served_at: '/frontend/' }
       })
     },
     {
@@ -213,6 +220,30 @@ export function createServer(config = loadConfig()) {
         })
     },
     {
+      method: 'GET',
+      pattern: /^\/api\/design\/types$/,
+      handler: () => ({
+        types: Object.entries(DESIGN_TYPES).map(([id, type]) => ({
+          id,
+          label: type.label,
+          width: type.width,
+          height: type.height
+        }))
+      })
+    },
+    {
+      method: 'POST',
+      pattern: /^\/api\/design\/backgrounds$/,
+      handler: async ({ body }) =>
+        service.requestBackground({
+          userId: userIdFrom(String(body.userId ?? '')),
+          colour: body.colour ?? { name: body.colourName, hex: body.hex },
+          reason: body.reason,
+          consent: body.consent,
+          design: body.design
+        })
+    },
+    {
       method: 'POST',
       pattern: /^\/api\/design\/transform$/,
       handler: async ({ body }) =>
@@ -236,6 +267,19 @@ export function createServer(config = loadConfig()) {
       if (otherMethods.length > 0) {
         res.setHeader('Allow', otherMethods.map((candidate) => candidate.method).join(', '));
         throw new ApiError(405, 'method_not_allowed', `${req.method} is not allowed on ${url.pathname}.`);
+      }
+      if (req.method === 'GET' || req.method === 'HEAD') {
+        const file = await readStaticFile({ root: config.frontendDir, urlPath: url.pathname });
+        if (file.found) {
+          if (file.status === 302) {
+            res.writeHead(302, file.headers);
+            res.end();
+            return;
+          }
+          res.writeHead(200, file.headers);
+          res.end(req.method === 'HEAD' ? undefined : file.body);
+          return;
+        }
       }
       throw notFound('not_found', `No route ${req.method} ${url.pathname}.`);
     }

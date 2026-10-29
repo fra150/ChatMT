@@ -1,14 +1,14 @@
 {
   "name": "chatmt",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
-  "description": "ChatMT - reflective and regenerative AI prototype. Phase 2 colour preference engine plus the backend for reason policy, profiles, design assistance and image operations.",
+  "description": "ChatMT - reflective and regenerative AI prototype. Colour preference engine, reason policy for red and yellow, friendliness profile, background suggestions, image operations, and the interface served by the same backend.",
   "type": "module",
   "scripts": {
     "start": "node backend/server.js",
     "test": "node tests/run-tests.mjs",
     "test:backend": "node --test tests/backend.test.mjs",
-    "serve": "python -m http.server 8000"
+    "test:browser": "node tests/browser-checks.mjs"
   },
   "engines": {
     "node": ">=18"

@@ -5,6 +5,10 @@
  *   - cogent   -> a reason about meaning, purpose, audience, brand, contrast, design context;
  *   - personal -> taste alone ("I just like it", "it is my favourite colour").
  *
+ * On 2026-10-29 the creator added that an absent reason is personal in nature. It is
+ * therefore classified as personal here, and marked with `absent_reason: true` so the
+ * interface can say which of the two happened instead of collapsing them.
+ *
  * This module is deterministic and explainable. It does not understand language: it matches
  * declared wording patterns, adds their weights, and reports which patterns matched. When the
  * patterns cannot decide, it says so instead of guessing; a second stage (a language model,
@@ -256,13 +260,14 @@ export function assessReasonWithRules({ colourName, reason } = {}) {
     return {
       colour_name: colour,
       reason_present: false,
-      verdict: VERDICTS.NEEDS_REVIEW,
-      confidence: 0,
+      absent_reason: true,
+      verdict: VERDICTS.PERSONAL,
+      confidence: 0.6,
       method: METHODS.NONE,
       scores: { cogent: 0, personal: 0 },
       matched: [],
       explanation: [
-        'No reason was given. The question of the standard code is still unanswered, so no friendly or not friendly profile is recorded.'
+        'No reason was given. An absent reason is personal in nature by the declared rule, so the profile is recorded as not friendly; the colour preference itself is not stored until the question is answered.'
       ]
     };
   }
@@ -314,6 +319,7 @@ export function assessReasonWithRules({ colourName, reason } = {}) {
   return {
     colour_name: colour,
     reason_present: true,
+    absent_reason: false,
     verdict,
     confidence,
     method: METHODS.RULES,

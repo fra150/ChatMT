@@ -88,8 +88,16 @@ test('health, standards, palette and meanings are exposed', async () => {
   assert.deepEqual(meanings.body.questioned.map((entry) => entry.colour_name), ['red', 'yellow']);
   assert.match(meanings.body.biasExplanation, /danger or royalty/);
   assert.match(meanings.body.biasExplanation, /anger or determination/);
-  assert.ok(meanings.body.noMeaningRecorded.some((entry) => entry.name === 'magenta'));
-  assert.ok(meanings.body.policies.length >= 5);
+  assert.ok(meanings.body.noMeaningRecorded.some((entry) => entry.name === 'lime'));
+  assert.equal(meanings.body.noMeaningRecorded.some((entry) => entry.name === 'magenta'), false);
+  assert.ok(meanings.body.policies.length >= 8);
+  assert.equal(meanings.body.assistance.reduced.delay_ms, 900);
+  assert.equal(meanings.body.assistance.reduced.suggestion_limit, 2);
+  assert.deepEqual(
+    meanings.body.equivalent.map((entry) => `${entry.colour_name}:${entry.same_as}`),
+    ['magenta:indigo', 'purple:violet']
+  );
+  assert.equal(meanings.body.backgrounds.choice, 'user');
 
   const palette = await api('/api/palette');
   assert.equal(palette.status, 200);
@@ -98,7 +106,17 @@ test('health, standards, palette and meanings are exposed', async () => {
   assert.equal(green.encouraged, true);
   assert.deepEqual(green.meanings, ['prosperity and peace']);
   const magenta = palette.body.colours.find((entry) => entry.name === 'magenta');
-  assert.equal(magenta.meanings, null);
+  assert.deepEqual(magenta.meanings, ['victory']);
+  assert.equal(magenta.encouraged, true);
+  assert.equal(magenta.equivalent, true);
+  assert.equal(magenta.same_as, 'indigo');
+
+  const types = await api('/api/design/types');
+  assert.equal(types.status, 200);
+  assert.deepEqual(
+    types.body.types.map((entry) => entry.id),
+    ['flyer', 'poster', 'social_post', 'banner', 'background']
+  );
 });
 
 test('choosing green gives a friendly profile with five five-colour suggestions', async () => {
@@ -116,11 +134,14 @@ test('choosing green gives a friendly profile with five five-colour suggestions'
   assert.match(response.body.answer.headline, /colour-green/);
   assert.equal(response.body.profile.level, 'friendly');
   assert.equal(response.body.profile.suggestion_limit, 5);
-  assert.equal(response.body.profile.decision, null);
+  assert.equal(response.body.profile.display_delay_ms, 0);
+  assert.equal(response.body.profile.decision.verdict, 'encouraged');
+  assert.equal(typeof response.body.stored.standingRecordId, 'string');
   assert.equal(response.body.designSuggestions.suggestions.length, 5);
   assert.equal(response.body.designSuggestions.assistance.withheld.length, 1);
   assert.equal(typeof response.body.stored.preferenceId, 'string');
   assert.match(response.body.answer.policyNotice, /prosperity and peace/);
+  assert.match(response.body.answer.policyNotice, /friendly/);
 
   for (const suggestion of response.body.designSuggestions.suggestions) {
     for (const entry of suggestion.palette) {
@@ -129,13 +150,14 @@ test('choosing green gives a friendly profile with five five-colour suggestions'
   }
 
   const memory = await api('/api/users/green-user/memory');
-  assert.equal(memory.body.count, 1);
-  assert.equal(memory.body.records[0].category, 'preference');
-  assert.equal(memory.body.records[0].content.reason, null);
+  assert.equal(memory.body.count, 2);
+  const preference = memory.body.records.find((record) => record.category === 'preference');
+  assert.equal(preference.content.reason, null);
+  assert.ok(memory.body.records.some((record) => record.category === 'interaction'));
   assert.equal(memory.body.profile.level, 'friendly');
 });
 
-test('red without a reason asks the question and stores nothing', async () => {
+test('red without a reason asks the question, stores the profile as not friendly and not the preference', async () => {
   const response = await api('/api/interactions', {
     method: 'POST',
     body: { userId: 'question-user', colour: { name: 'red' }, consent: true }
@@ -146,15 +168,25 @@ test('red without a reason asks the question and stores nothing', async () => {
   assert.equal(response.body.answer.needsClarification, true);
   assert.equal(response.body.answer.storage.permitted, false);
   assert.equal(response.body.answer.storage.stored, false);
-  assert.equal(response.body.reasonAssessment, null);
+  assert.equal(response.body.answer.storage.requiresQuestionAnswer, true);
+  assert.equal(response.body.reasonAssessment.verdict, 'personal');
+  assert.equal(response.body.reasonAssessment.reason_present, false);
   assert.equal(response.body.stored.preferenceId, null);
-  assert.equal(response.body.profile.level, 'friendly');
-  assert.equal(response.body.profile.decision, null);
+  assert.equal(typeof response.body.stored.standingRecordId, 'string');
+  assert.equal(response.body.profile.level, 'not_friendly');
+  assert.equal(response.body.profile.decision.verdict, 'absent');
+  assert.equal(response.body.profile.display_delay_ms, 900);
+  assert.equal(response.body.display.delay_ms, 900);
+  assert.equal(response.body.designSuggestions.suggestions.length, 2);
+  assert.match(response.body.answer.policyNotice, /absent reason is personal/);
 
   const memory = await api('/api/users/question-user/memory');
-  assert.equal(memory.body.count, 0);
+  assert.equal(memory.body.count, 2, 'the profile and the assessment, not the preference');
+  assert.equal(memory.body.records.some((record) => record.category === 'preference'), false);
   const standing = await api('/api/users/question-user/standing');
-  assert.equal(standing.body.hasStoredProfile, false);
+  assert.equal(standing.body.hasStoredProfile, true);
+  assert.equal(standing.body.profile.level, 'not_friendly');
+  assert.equal(standing.body.pendingMessages.length, 2);
 });
 
 test('a personal reason stores a not friendly profile, then displeasure and the explanation arrive once', async () => {
@@ -565,7 +597,8 @@ test('memory can be written, read, corrected and deleted, and consent is enforce
   assert.equal(correction.body.correction.category, 'correction');
 
   const memory = await api('/api/users/crud-user/memory');
-  assert.equal(memory.body.count, 2);
+  // preference + the friendly profile written by savePreference + correction
+  assert.equal(memory.body.count, 3);
 
   const recordId = preference.body.preference.id;
   const deleted = await api(`/api/users/crud-user/memory/${encodeURIComponent(recordId)}`, { method: 'DELETE' });
@@ -578,7 +611,7 @@ test('memory can be written, read, corrected and deleted, and consent is enforce
 
   const cleared = await api('/api/users/crud-user/memory', { method: 'DELETE' });
   assert.equal(cleared.status, 200);
-  assert.equal(cleared.body.deletedCount, 1);
+  assert.equal(cleared.body.deletedCount, 2);
 
   const empty = await api('/api/users/crud-user/memory');
   assert.equal(empty.body.count, 0);
@@ -653,6 +686,157 @@ test('two users never share a profile or a preference', async () => {
   assert.equal(aliceAgain.body.profile.level, 'not_friendly');
   assert.equal(bobAgain.body.profile.level, 'friendly');
   assert.equal(bobAgain.body.hasStoredProfile, false);
+});
+
+test('choosing one of the encouraged colours restores a not friendly profile', async () => {
+  const personal = await api('/api/interactions', {
+    method: 'POST',
+    body: { userId: 'restore-user', colour: { name: 'red' }, reason: 'I just like it', consent: true }
+  });
+  assert.equal(personal.body.profile.level, 'not_friendly');
+  assert.equal(personal.body.profile.display_delay_ms, 900);
+
+  const restored = await api('/api/interactions', {
+    method: 'POST',
+    body: { userId: 'restore-user', colour: { name: 'magenta' }, consent: true }
+  });
+  assert.equal(restored.status, 200);
+  assert.equal(restored.body.profile.level, 'friendly');
+  assert.equal(restored.body.profile.display_delay_ms, 0);
+  assert.equal(restored.body.profile.decision.verdict, 'encouraged');
+  assert.equal(restored.body.designSuggestions.suggestions.length, 5);
+  assert.match(restored.body.answer.policyNotice, /same meaning as indigo/);
+  assert.equal(restored.body.standingMessages.length, 2, 'the displeasure scheduled before is still due');
+});
+
+test('the displeasure recurs after another personal choice of red or yellow', async () => {
+  await api('/api/interactions', {
+    method: 'POST',
+    body: { userId: 'recurring-user', colour: { name: 'red' }, reason: 'It is my favourite colour', consent: true }
+  });
+
+  const delivered = await api('/api/interactions', {
+    method: 'POST',
+    body: { userId: 'recurring-user', colour: { name: 'blue' }, consent: false }
+  });
+  assert.equal(delivered.body.standingMessages.length, 2);
+  assert.equal(delivered.body.profile.level, 'not_friendly', 'without consent the friendly choice is not stored');
+
+  const quiet = await api('/api/interactions', {
+    method: 'POST',
+    body: { userId: 'recurring-user', colour: { name: 'blue' }, consent: false }
+  });
+  assert.equal(quiet.body.standingMessages.length, 0);
+
+  const again = await api('/api/interactions', {
+    method: 'POST',
+    body: { userId: 'recurring-user', colour: { name: 'yellow' }, reason: 'Just because', consent: true }
+  });
+  assert.equal(again.body.profile.level, 'not_friendly');
+  assert.equal(again.body.standingMessages.length, 0, 'the new displeasure is due at the next interaction');
+
+  const repeated = await api('/api/interactions', {
+    method: 'POST',
+    body: { userId: 'recurring-user', colour: { name: 'blue' }, consent: false }
+  });
+  assert.equal(repeated.body.standingMessages.length, 2);
+  assert.equal(repeated.body.standingMessages[0].code, 'personal-reason-displeasure');
+});
+
+test('a requested red background asks why, and only a cogent reason produces it', async () => {
+  const asked = await api('/api/design/backgrounds', {
+    method: 'POST',
+    body: { userId: 'background-user', colour: { name: 'red' }, consent: true, design: { type: 'flyer' } }
+  });
+  assert.equal(asked.status, 200);
+  assert.equal(asked.body.requiresReason, true);
+  assert.equal(asked.body.accepted, false);
+  assert.equal(asked.body.designSuggestions, null);
+  assert.match(asked.body.question, /Why do you want a red or yellow background\?/);
+  assert.match(asked.body.notice, /asks immediately/);
+
+  const personal = await api('/api/design/backgrounds', {
+    method: 'POST',
+    body: {
+      userId: 'background-user',
+      colour: { name: 'red' },
+      reason: 'I just like it',
+      consent: true,
+      design: { type: 'flyer' }
+    }
+  });
+  assert.equal(personal.body.accepted, false);
+  assert.equal(personal.body.profile.level, 'not_friendly');
+  assert.equal(personal.body.profile.display_delay_ms, 900);
+  assert.equal(personal.body.designSuggestions.suggestions.length, 2);
+  assert.match(personal.body.notice, /unfriendly mood/);
+  assert.equal(personal.body.reasonAssessment.verdict, 'personal');
+  for (const suggestion of personal.body.designSuggestions.suggestions) {
+    assert.equal(suggestion.palette.some((entry) => entry.colour_name === 'red'), false);
+  }
+
+  const cogent = await api('/api/design/backgrounds', {
+    method: 'POST',
+    body: {
+      userId: 'background-cogent-user',
+      colour: { name: 'yellow' },
+      reason: 'It signals attention on the warning sign and the audience needs that',
+      consent: true,
+      design: { type: 'poster' }
+    }
+  });
+  assert.equal(cogent.body.accepted, true);
+  assert.equal(cogent.body.profile.level, 'friendly');
+  assert.equal(cogent.body.profile.allow_questioned_colours, true);
+  assert.equal(cogent.body.designSuggestions.suggestions.length, 3);
+  assert.equal(cogent.body.designSuggestions.choice.by, 'user');
+  assert.equal(cogent.body.designSuggestions.choice.applied, false);
+  for (const suggestion of cogent.body.designSuggestions.suggestions) {
+    const requested = suggestion.palette.find((entry) => entry.role === 'requested');
+    assert.equal(requested.colour_name, 'yellow');
+  }
+  assert.match(cogent.body.notice, /stays with you/);
+
+  const wrongColour = await api('/api/design/backgrounds', {
+    method: 'POST',
+    body: { userId: 'background-user', colour: { name: 'green' }, consent: true }
+  });
+  assert.equal(wrongColour.status, 400);
+  assert.equal(wrongColour.body.error.code, 'background_not_questioned');
+});
+
+test('the interface is served by the same server, and only from the frontend directory', async () => {
+  const root = await fetch(`${base}/`, { redirect: 'manual' });
+  assert.equal(root.status, 302);
+  assert.equal(root.headers.get('location'), '/frontend/');
+
+  const page = await fetch(`${base}/frontend/`);
+  assert.equal(page.status, 200);
+  assert.match(page.headers.get('content-type'), /text\/html/);
+  const html = await page.text();
+  assert.match(html, /ChatMT/);
+  assert.match(html, /id="background-ask"/);
+
+  const script = await fetch(`${base}/frontend/js/app.js`);
+  assert.equal(script.status, 200);
+  assert.match(script.headers.get('content-type'), /javascript/);
+  const source = await script.text();
+  assert.match(source, /no innerHTML/);
+
+  const css = await fetch(`${base}/frontend/css/styles.css`);
+  assert.equal(css.status, 200);
+  assert.match(css.headers.get('content-type'), /text\/css/);
+
+  const font = await fetch(`${base}/frontend/fonts/Gloock-Regular.ttf`);
+  assert.equal(font.status, 200);
+  assert.match(font.headers.get('content-type'), /^font\/ttf/);
+  assert.equal(font.headers.get('x-content-type-options'), 'nosniff');
+  assert.ok((await font.arrayBuffer()).byteLength > 0);
+
+  for (const escaping of ['/frontend/../package.json', '/frontend/%2e%2e/package.json', '/package.json', '/modules/color_engine/palette.js']) {
+    const response = await fetch(`${base}${escaping}`);
+    assert.equal(response.status, 404, escaping);
+  }
 });
 
 test('the default standing is friendly and the meaning index is the same one the API uses', () => {

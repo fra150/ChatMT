@@ -7,6 +7,15 @@
  * reason for choosing red or yellow, and a not friendly profile receives fewer and less
  * developed suggestions.
  *
+ * On 2026-10-29 the creator added three rules that this module implements:
+ *   - a lesser effort also means a small delay before the outputs are displayed, declared as
+ *     `assistance.reduced.delay_ms` in the standard file;
+ *   - red or yellow backgrounds are suggested only when the user asks for them and gives a
+ *     cogent reason for that request, so they have their own entry point
+ *     (`buildRequestedBackgroundSuggestions`);
+ *   - the app only suggests backgrounds: every result carries `choice.by === 'user'` and no
+ *     background is ever applied by the system.
+ *
  * What this module produces is a *specification*, not a rendered picture: an SVG markup and
  * the equivalent CSS gradient for each background. That is deliberate — a suggestion can be
  * inspected and tested, while a generated image would need a model this project does not have.
@@ -203,6 +212,7 @@ export function buildDesignSuggestions({ meanings, standing, colourName, design 
   const extended = effort === 'extensive';
   const entitlement = meanings.assistance[effort];
   const limit = entitlement.suggestion_limit;
+  const delayMs = entitlement.delay_ms;
   const allowQuestioned = extended && standing.allow_questioned_colours === true;
 
   const five = meanings.encouraged;
@@ -279,9 +289,14 @@ export function buildDesignSuggestions({ meanings, standing, colourName, design 
     ? `Extensive assistance: ${limit} backgrounds tending towards ${meanings.encouragedPhrase}.` +
       (allowQuestioned ? ` A red or yellow accent is allowed because a cogent reason was recorded.` : '')
     : `Reduced assistance: ${limit} backgrounds instead of ${meanings.assistance.extensive.suggestion_limit}, ` +
-      `with brief descriptions, because the profile is not friendly.`;
+      `with brief descriptions, and the answer waits ${delayMs} ms before it is displayed, because the profile is not friendly.`;
 
   return {
+    choice: {
+      by: 'user',
+      applied: false,
+      note: 'These are suggestions: the app does not choose a background for you.'
+    },
     design: {
       type: context.type,
       label: context.label,
@@ -295,9 +310,116 @@ export function buildDesignSuggestions({ meanings, standing, colourName, design 
       effort,
       limit,
       detail: entitlement.detail,
+      delay_ms: delayMs,
       extended,
       note,
       withheld
+    },
+    suggestions
+  };
+}
+
+/**
+ * Backgrounds tending towards red or yellow.
+ *
+ * These are only produced for a user who asked for them and whose cogent reason for the
+ * request is recorded, which is why the guard is a precondition and not a flag: a caller that
+ * skips the question cannot reach them.
+ *
+ * @param {object} input
+ * @param {object} input.meanings the index built by createMeaningIndex
+ * @param {object} input.standing the friendliness standing
+ * @param {string} input.colourName `red` or `yellow`, the background the user asked for
+ * @param {object} [input.design] the design context, already normalised or raw
+ * @param {string} [input.reason] the cogent reason recorded for the request, for the report
+ */
+export function buildRequestedBackgroundSuggestions({ meanings, standing, colourName, design, reason = null } = {}) {
+  if (!meanings || !Array.isArray(meanings.encouraged) || meanings.encouraged.length === 0) {
+    throw new TypeError('buildRequestedBackgroundSuggestions needs the colour meaning index.');
+  }
+  if (!standing || typeof standing !== 'object') {
+    throw new TypeError('buildRequestedBackgroundSuggestions needs the user standing.');
+  }
+  const requested = String(colourName ?? '').trim().toLowerCase();
+  if (!meanings.isQuestioned(requested)) {
+    throw new RangeError(
+      `Only ${meanings.questionedPhrase} backgrounds are questioned; ${JSON.stringify(requested)} is not.`
+    );
+  }
+  if (standing.allow_questioned_colours !== true) {
+    throw new RangeError(
+      `A ${requested} background is suggested only after a cogent reason for ${requested} was recorded.`
+    );
+  }
+
+  const context = design?.width && design?.height ? design : normaliseDesignContext(design);
+  const requestedEntry = meanings.representationFor(requested);
+  const five = meanings.encouraged;
+  const limit = Math.min(meanings.backgrounds.suggestion_limit, BACKGROUND_STYLES.length);
+
+  const suggestions = BACKGROUND_STYLES.slice(0, limit).map((style, index) => {
+    const supportA = five[index % five.length];
+    const supportB = five[(index + 2) % five.length];
+
+    const palette = [
+      paletteEntry(requestedEntry, 'requested'),
+      paletteEntry(supportA, 'secondary'),
+      paletteEntry(supportB, 'support')
+    ];
+
+    const built = style.build({
+      width: context.width,
+      height: context.height,
+      colours: [requestedEntry.hex, supportA.hex, supportB.hex],
+      key: `requested-${requested}-${index + 1}`
+    });
+
+    return {
+      id: `${context.type}-requested-${requested}-${index + 1}`,
+      title: `${context.label} background: ${style.label}, tending towards ${requested}`,
+      palette,
+      background: {
+        kind: style.id,
+        width: context.width,
+        height: context.height,
+        css: built.css,
+        svg: built.svg
+      },
+      layout: style.layout,
+      why:
+        `${requested} carries ${requestedEntry.meaning} and is the colour you asked for; ` +
+        `${supportA.colour_name} (${supportA.meaning}) and ${supportB.colour_name} (${supportB.meaning}) keep the design ` +
+        `close to the five encouraged colours.`,
+      detail: 'full'
+    };
+  });
+
+  return {
+    choice: {
+      by: 'user',
+      applied: false,
+      note: 'Red or yellow backgrounds are suggestions only: the app does not choose a background for you.'
+    },
+    requested: { colour_name: requested, hex: requestedEntry.hex, meanings: requestedEntry.meanings, reason },
+    design: {
+      type: context.type,
+      label: context.label,
+      width: context.width,
+      height: context.height,
+      subject: context.subject,
+      audience: context.audience,
+      text: context.text
+    },
+    assistance: {
+      effort: 'extensive',
+      limit,
+      detail: 'full',
+      delay_ms: meanings.assistance.extensive.delay_ms,
+      extended: true,
+      note:
+        `${limit} backgrounds tending towards ${requested} and towards ${meanings.encouragedPhrase}, ` +
+        'suggested because you asked for them and gave a cogent reason.',
+      withheld: []
     },
     suggestions
   };

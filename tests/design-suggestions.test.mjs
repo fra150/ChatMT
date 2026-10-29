@@ -11,6 +11,7 @@ import fs from 'node:fs';
 import { createMeaningIndex } from '../modules/meaning/colour-meanings.js';
 import {
   buildDesignSuggestions,
+  buildRequestedBackgroundSuggestions,
   normaliseDesignContext,
   DESIGN_TYPES
 } from '../modules/policy/design-suggestions.js';
@@ -152,6 +153,74 @@ test('the accent follows the colour of the cogent reason, not the colour being d
   const result = buildDesignSuggestions({ meanings, standing, colourName: 'green', design: { type: 'banner' } });
   const accent = result.suggestions.at(-1).palette.find((entry) => entry.role === 'accent');
   assert.equal(accent.colour_name, 'yellow');
+});
+
+test('the reduced assistance declares the delay and the suggestions are only suggestions', () => {
+  const friendlyResult = buildDesignSuggestions({ meanings, standing: friendly(), colourName: 'blue', design: {} });
+  assert.equal(friendlyResult.assistance.delay_ms, 0);
+  assert.equal(friendlyResult.choice.by, 'user');
+  assert.equal(friendlyResult.choice.applied, false);
+
+  const reducedResult = buildDesignSuggestions({
+    meanings,
+    standing: notFriendly(),
+    colourName: 'blue',
+    design: {}
+  });
+  assert.equal(reducedResult.assistance.delay_ms, 900);
+  assert.match(reducedResult.assistance.note, /waits 900 ms/);
+  assert.equal(reducedResult.choice.applied, false);
+});
+
+test('a red or yellow background needs the request and a cogent reason before it is suggested', () => {
+  assert.throws(
+    () => buildRequestedBackgroundSuggestions({ meanings, standing: friendly(), colourName: 'red', design: {} }),
+    RangeError
+  );
+  assert.throws(
+    () => buildRequestedBackgroundSuggestions({
+      meanings,
+      standing: cogentFor(friendly(), 'red'),
+      colourName: 'green',
+      design: {}
+    }),
+    RangeError
+  );
+});
+
+test('with a cogent reason the requested background is suggested, tending towards the five colours', () => {
+  const result = buildRequestedBackgroundSuggestions({
+    meanings,
+    standing: cogentFor(friendly(), 'yellow'),
+    colourName: 'yellow',
+    design: { type: 'poster', subject: 'Safety week' },
+    reason: 'It signals attention on a safety poster'
+  });
+
+  assert.equal(result.requested.colour_name, 'yellow');
+  assert.equal(result.choice.by, 'user');
+  assert.equal(result.choice.applied, false);
+  assert.equal(result.assistance.delay_ms, 0);
+  assert.equal(result.suggestions.length, meanings.backgrounds.suggestion_limit);
+
+  for (const suggestion of result.suggestions) {
+    const requested = suggestion.palette.find((entry) => entry.role === 'requested');
+    assert.equal(requested.colour_name, 'yellow');
+    const support = suggestion.palette.filter((entry) => FIVE.includes(entry.colour_name));
+    assert.equal(support.length, 2);
+    assert.match(suggestion.background.svg, /^<svg /);
+    assert.match(suggestion.title, /yellow/);
+  }
+  assert.deepEqual(
+    buildRequestedBackgroundSuggestions({
+      meanings,
+      standing: cogentFor(friendly(), 'yellow'),
+      colourName: 'yellow',
+      design: { type: 'poster', subject: 'Safety week' },
+      reason: 'It signals attention on a safety poster'
+    }),
+    result
+  );
 });
 
 test('every design type is accepted and keeps its own size', () => {

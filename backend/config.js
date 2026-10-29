@@ -51,6 +51,9 @@ export function loadConfig(env = process.env) {
     port: integer(env.PORT ?? env.CHATMT_PORT, 3080, { minimum: 0, maximum: 65535, name: 'PORT' }),
     dataDir: path.resolve(REPOSITORY_ROOT, text(env.CHATMT_DATA_DIR) ?? 'data'),
     standardsDir: path.join(REPOSITORY_ROOT, 'standards'),
+    // The interface is served by this server, so the page and the API share one origin and
+    // there is nothing to configure in the browser. See backend/static-files.js.
+    frontendDir: path.join(REPOSITORY_ROOT, 'frontend'),
     allowedOrigins: Object.freeze(originList(env.CHATMT_ALLOWED_ORIGINS)),
     maxBodyBytes: integer(env.CHATMT_MAX_BODY_BYTES, 12 * 1024 * 1024, {
       minimum: 1024,
