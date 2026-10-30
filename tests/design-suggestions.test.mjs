@@ -287,3 +287,82 @@ test('image operations: only png, jpeg and bmp are accepted as output', () => {
     assert.throws(() => normaliseFormat(format), ImageOperationError);
   }
 });
+
+// ---------------------------------------------------------------------------------------
+// Automatic composition (30 October 2026): the app does the graphic work
+// ---------------------------------------------------------------------------------------
+
+import { composeDesign } from '../modules/design/composer.js';
+
+const PHOTO = { image: 'data:image/jpeg;base64,/9j/4AAQSkZJRg==', width: 1200, height: 800 };
+
+test('the app composes a portrait flyer and writes the copy itself', () => {
+  const result = composeDesign({
+    meanings,
+    colourName: 'blue',
+    design: { type: 'flyer', subject: 'Jazz night', audience: 'Students' }
+  });
+  assert.equal(result.layout.id, 'stack');
+  assert.equal(result.copy.headline, 'Jazz night');
+  assert.equal(result.copy.subhead, 'For Students');
+  assert.match(result.copy.body, /Blue carries abundance/);
+  assert.equal(result.copy.footer, 'blue · #0000FF · 1080×1350');
+  assert.equal(result.photo, null);
+  assert.ok(result.svg.startsWith('<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1350"'));
+  assert.match(result.svg, /#0000FF/);
+  assert.match(result.svg, /Jazz night/);
+  assert.ok(result.actions.some((line) => /No photo sent/.test(line)));
+  assert.equal(result.choice.by, 'user');
+  assert.ok(result.svg_bytes >= result.svg.length);
+});
+
+test('a wide format places the photo in the right band and fits it automatically', () => {
+  const result = composeDesign({ meanings, colourName: 'green', design: { type: 'banner' }, photo: PHOTO });
+  assert.equal(result.layout.id, 'band-right');
+  assert.deepEqual(result.photo, { width: 1200, height: 800, treatment: 'cover-fit, centred, automatic' });
+  assert.match(result.svg, /preserveAspectRatio="xMidYMid slice"/);
+  assert.match(result.svg, /<image href="data:image\/jpeg;base64,/);
+  assert.ok(result.actions.some((line) => /cover-fit/.test(line)));
+  assert.equal(result.warnings.length, 0);
+});
+
+test('a square format uses the full-bleed layout with a scrim under the text', () => {
+  const result = composeDesign({ meanings, colourName: 'orange', design: { type: 'social_post' }, photo: PHOTO });
+  assert.equal(result.layout.id, 'cover');
+  assert.match(result.svg, /width="1080" height="1080"/);
+  assert.match(result.svg, /<image href="[^"]+" x="0" y="0" width="1080" height="1080"/);
+  assert.match(result.svg, /linearGradient/);
+  assert.ok(result.actions.some((line) => /scrim/.test(line)));
+});
+
+test('the text of the flyer setup is escaped, never injected as markup', () => {
+  const result = composeDesign({
+    meanings,
+    colourName: 'violet',
+    design: { type: 'poster', subject: 'Tom & Jerry <script>' }
+  });
+  assert.match(result.copy.headline, /Tom & Jerry <script>/);
+  assert.match(result.svg, /Tom &amp; Jerry &lt;script&gt;/);
+  assert.doesNotMatch(result.svg, /<script>/);
+});
+
+test('the composition is deterministic and never chooses the colour', () => {
+  const input = { meanings, colourName: 'indigo', design: { type: 'flyer', subject: 'Fair' }, photo: PHOTO };
+  const first = composeDesign(input);
+  const second = composeDesign(input);
+  assert.equal(first.svg, second.svg);
+  assert.equal(first.choice.by, 'user');
+  assert.equal(first.choice.applied, true);
+});
+
+test('a red or yellow composition needs the recorded cogent reason', () => {
+  assert.throws(() => composeDesign({ meanings, colourName: 'red', design: { type: 'flyer' } }), /cogent reason/);
+  const unlocked = composeDesign({
+    meanings,
+    standing: { ...friendly(), allow_questioned_colours: true },
+    colourName: 'red',
+    design: { type: 'flyer' }
+  });
+  assert.equal(unlocked.colour.colour_name, 'red');
+  assert.ok(unlocked.warnings.some((line) => /cogent reason/.test(line)));
+});

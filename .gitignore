@@ -8,7 +8,12 @@ node_modules/
 # Backend data: one JSON profile per user. Local data, never committed.
 data/
 
-# Local secrets: never commit an API key.
+# Local secrets: never commit an API key. The template is the one exception: it holds no key
+# and it is what tells the next person which variables exist.
 .env
 .env.*
+!.env.example
 .gstack/
+
+.vercel
+.env*

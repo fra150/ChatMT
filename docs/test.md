@@ -6,7 +6,7 @@ Nessun risultato è stimato. Dove una metrica non è stata misurata, è scritto 
 - **Data delle esecuzioni:** 26 ottobre 2026 (frontend), 28 ottobre 2026 (backend) e
   29 ottobre 2026 (regole nuove, interfaccia collegata alle API, redesign “Ink Register” e
   passata di correzione)
-- **Ultima esecuzione completa:** 29 ottobre 2026 — **99/99** test automatici, **51/51**
+- **Ultima esecuzione completa:** 30 ottobre 2026 — **108/108** test automatici, **51/51**
   controlli nel browser (che avviano da sé il backend su una cartella temporanea)
 - **Ambiente:** Windows, Node.js v26.5.0, Chrome 156
 
@@ -152,15 +152,20 @@ Nota: nei test il tempo e gli identificativi sono iniettati (`now`, `idFactory`)
 | routing e validazione | 404, 405, userId non valido, colore fuori tavolozza, JSON non valido, ragione troppo lunga |
 | separazione utenti | il profilo di un utente non compare per un altro |
 | LLM (unità) | richiesta OpenAI-compatible, JSON stretta, risposte malformate, errori e assenza di chiave |
+| `.env` (unità) | commenti, `export`, virgolette, valore con commento in coda, file assente, variabile esportata che vince sul file |
+| DeepSeek (unità) | endpoint e modello dichiarati, `thinking: {"type":"enabled"}` e `reasoning_effort` nel corpo, assenza dei due parametri con `CHATMT_LLM_THINKING=disabled`, valore non valido rifiutato all'avvio |
+| Composizione (unità) | layout per formato (`stack`, `band-right`, `cover`), testi scritti dall'app, foto adattata con `slice`, scrim, testo XML-escapato, determinismo, rosso/giallo solo con ragione registrata |
+| Composizione (HTTP) | `POST /api/design/compose` con e senza foto, red azzerato dal profilo (`400 background_not_questioned`), colore fuori tavolozza e immagine non decodificabile |
 
 ### Risultato dell'esecuzione
 
 ```
 node tests/run-tests.mjs
-tests 99   pass 99   fail 0
+tests 108   pass 108   fail 0
 ```
 
-99 test superati, 0 falliti. Sono inclusi i 34 confronti CIEDE2000 di riferimento, ciascuno verificato con tolleranza 1e-4. I 14 test di `reason-policy`, i 14 di `design-suggestions` e i 23 di `backend` sono quelli aggiornati o aggiunti per le regole del 29 ottobre.
+108 test superati, 0 falliti. Sono inclusi i 34 confronti CIEDE2000 di riferimento, ciascuno verificato con tolleranza 1e-4. I 14 test di `reason-policy`, i 14 di `design-suggestions` e i 26 di `backend` sono quelli aggiornati o aggiunti per le regole del 29 ottobre, la
+configurazione DeepSeek e la composizione automatica del 30 ottobre.
 
 **Un risultato non ovvio emerso dai test** e conservato come caso di regressione: il colore
 `lime` (`#00FF00`) senza standard risulta più vicino a **yellow** (23.40) che a **green**
@@ -207,7 +212,8 @@ controllo, non nel codice, ed è stato corretto nel controllo invece di allentar
 
 Queste verifiche **non fanno parte dei 51 controlli automatici**: sono state eseguite a mano su
 Chrome dopo il redesign, perché misurano stati che i controlli esistenti non coprono. Il test
-backend è stato esteso con l'asserzione sul MIME dei font, ma il numero di test resta 99.
+backend è stato esteso con l'asserzione sul MIME dei font; il 30 ottobre si sono aggiunti i due
+test su `.env` e DeepSeek e i sette sulla composizione automatica, quindi il totale è 108.
 
 | Verifica | Risultato |
 |---|---|
@@ -296,7 +302,7 @@ Non è stata misurata l'allocazione di memoria né l'uso di CPU.
 
 | Metrica | Stato |
 |---|---|
-| Accuratezza delle operazioni deterministiche | misurata: 34/34 coppie CIEDE2000 entro 1e-4; conversioni sRGB→CIELAB entro 0.05; 99/99 test superati |
+| Accuratezza delle operazioni deterministiche | misurata: 34/34 coppie CIEDE2000 entro 1e-4; conversioni sRGB→CIELAB entro 0.05; 108/108 test superati |
 | Precisione e richiamo su classificazioni con etichette di riferimento | **non misurate**: non esiste un insieme etichettato di ragioni personali/cogenti. Le regole sono verificate su casi scritti a mano, non come percentuale |
 | Operazioni immagine | verificate su un'immagine reale: crop, resize con proporzioni, rotazione, conversione png/jpeg/bmp, limiti e rifiuti |
 | Qualità dei suggerimenti grafici | **non misurata**: non sono stati valutati da designer né su un insieme di prova |

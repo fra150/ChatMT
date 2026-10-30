@@ -19,6 +19,7 @@ import { createServer } from '../backend/server.js';
 import { loadStandards } from '../backend/standards-loader.js';
 import { createInteractionService } from '../backend/services/interaction-service.js';
 import { createLlmClassifier, LlmError } from '../backend/llm-classifier.js';
+import { loadEnvFile, parseEnvFile } from '../backend/env-file.js';
 import { MemoryStore, createVolatileAdapter } from '../modules/memory/memory-store.js';
 import { PALETTE } from '../modules/color_engine/palette.js';
 import { createMeaningIndex } from '../modules/meaning/colour-meanings.js';
@@ -878,6 +879,86 @@ test('the LLM classifier sends a strict JSON request and validates the answer', 
   assert.match(sent.messages[1].content, /Because it represents danger/);
 });
 
+test('the .env file is read and an exported variable still wins', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'chatmt-env-'));
+  const file = path.join(directory, '.env');
+  fs.writeFileSync(
+    file,
+    [
+      '# a comment',
+      'DEEPSEEK_API_KEY=from-file',
+      'export CHATMT_LLM_MODEL="deepseek-flash"',
+      "CHATMT_LLM_THINKING='enabled'",
+      'CHATMT_LLM_REASONING_EFFORT=high # declared',
+      'NOT A PAIR',
+      'CHATMT_LLM_TIMEOUT_MS='
+    ].join('\n')
+  );
+
+  const parsed = parseEnvFile(fs.readFileSync(file, 'utf8'));
+  assert.equal(parsed.DEEPSEEK_API_KEY, 'from-file');
+  assert.equal(parsed.CHATMT_LLM_MODEL, 'deepseek-flash');
+  assert.equal(parsed.CHATMT_LLM_THINKING, 'enabled');
+  assert.equal(parsed.CHATMT_LLM_REASONING_EFFORT, 'high');
+  assert.equal(parsed.CHATMT_LLM_TIMEOUT_MS, '');
+  assert.equal('NOT' in parsed, false);
+
+  const env = { CHATMT_LLM_MODEL: 'exported-model' };
+  const result = loadEnvFile({ path: file, env });
+  assert.equal(result.found, true);
+  assert.equal(env.CHATMT_LLM_MODEL, 'exported-model');
+  assert.equal(env.DEEPSEEK_API_KEY, 'from-file');
+  assert.equal(result.loaded.includes('CHATMT_LLM_MODEL'), false);
+
+  const missing = loadEnvFile({ path: path.join(directory, 'absent.env'), env: {} });
+  assert.equal(missing.found, false);
+  assert.deepEqual(missing.loaded, []);
+
+  fs.rmSync(directory, { recursive: true, force: true });
+});
+
+test('DeepSeek is the declared default and the request asks for thinking mode', async () => {
+  const defaults = loadConfig({});
+  assert.equal(defaults.llm.apiBase, 'https://api.deepseek.com');
+  assert.equal(defaults.llm.model, 'deepseek-flash');
+  assert.equal(defaults.llm.thinking, 'enabled');
+  assert.equal(defaults.llm.reasoningEffort, 'high');
+  assert.equal(defaults.llm.timeoutMs, 20000);
+  assert.equal(defaults.llm.configured, false);
+  assert.equal(loadConfig({ DEEPSEEK_API_KEY: 'key' }).llm.configured, true);
+  assert.throws(() => loadConfig({ CHATMT_LLM_THINKING: 'maybe' }), /CHATMT_LLM_THINKING/);
+
+  const bodies = [];
+  const reply = () =>
+    new Response(JSON.stringify({ choices: [{ message: { content: '{"verdict":"personal","confidence":0.8}' } }] }), {
+      status: 200
+    });
+  const thinking = createLlmClassifier({
+    apiBase: 'https://api.deepseek.com',
+    apiKey: 'key',
+    fetchImpl: async (_url, options) => {
+      bodies.push(JSON.parse(options.body));
+      return reply();
+    }
+  });
+  await thinking.classify({ colourName: 'red', reason: 'I just like it' });
+  assert.deepEqual(bodies[0].thinking, { type: 'enabled' });
+  assert.equal(bodies[0].reasoning_effort, 'high');
+
+  const quiet = createLlmClassifier({
+    apiBase: 'https://api.deepseek.com',
+    apiKey: 'key',
+    thinking: 'disabled',
+    fetchImpl: async (_url, options) => {
+      bodies.push(JSON.parse(options.body));
+      return reply();
+    }
+  });
+  await quiet.classify({ colourName: 'red', reason: 'I just like it' });
+  assert.equal('thinking' in bodies[1], false);
+  assert.equal('reasoning_effort' in bodies[1], false);
+});
+
 test('the LLM classifier refuses malformed, failing and unconfigured requests', async () => {
   const malformed = createLlmClassifier({
     apiBase: 'https://llm.example/v1',
@@ -915,4 +996,56 @@ test('the LLM classifier refuses malformed, failing and unconfigured requests', 
   });
   const result = await unclear.classify({ colourName: 'yellow', reason: 'hmm' });
   assert.equal(result.verdict, 'needs_review');
+});
+
+test('the app composes a design from the chosen colour, the photo and the flyer setup', async () => {
+  const image = await imageDataUrl('png', 40, 30);
+  const composed = await api('/api/design/compose', {
+    method: 'POST',
+    body: {
+      userId: 'compose-user',
+      colour: { name: 'blue' },
+      design: { type: 'banner', subject: 'Jazz night', audience: 'Students' },
+      image
+    }
+  });
+  assert.equal(composed.status, 200);
+  const result = composed.body;
+  assert.equal(result.layout.id, 'band-right');
+  assert.equal(result.copy.headline, 'Jazz night');
+  assert.match(result.svg, /^<svg xmlns/);
+  assert.match(result.svg, /data:image\/jpeg;base64,/);
+  assert.equal(result.photo.treatment, 'cover-fit, centred, automatic: no manual crop');
+  assert.equal(result.choice.by, 'user');
+  assert.equal(result.stored, null);
+  assert.ok(result.svg_bytes > 1000);
+
+  const withoutPhoto = await api('/api/design/compose', {
+    method: 'POST',
+    body: { userId: 'compose-user', colour: { name: 'green' }, design: { type: 'social_post' } }
+  });
+  assert.equal(withoutPhoto.status, 200);
+  assert.equal(withoutPhoto.body.photo, null);
+  assert.match(withoutPhoto.body.svg, /data-field/);
+
+  const questioned = await api('/api/design/compose', {
+    method: 'POST',
+    body: { userId: 'compose-user', colour: { name: 'red' }, design: { type: 'flyer' } }
+  });
+  assert.equal(questioned.status, 400);
+  assert.equal(questioned.body.error.code, 'background_not_questioned');
+
+  const unknown = await api('/api/design/compose', {
+    method: 'POST',
+    body: { userId: 'compose-user', colour: { name: 'brown' }, design: { type: 'flyer' } }
+  });
+  assert.equal(unknown.status, 400);
+  assert.equal(unknown.body.error.code, 'unknown_colour');
+
+  const notAnImage = await api('/api/design/compose', {
+    method: 'POST',
+    body: { userId: 'compose-user', colour: { name: 'green' }, design: { type: 'flyer' }, image: 'data:image/png;base64,bm90IGFuIGltYWdl' }
+  });
+  assert.equal(notAnImage.status, 400);
+  assert.equal(notAnImage.body.error.code, 'invalid_image');
 });

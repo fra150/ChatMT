@@ -14,7 +14,7 @@ for the palette, the answer, the profile, the memory and the background suggesti
 `localStorage` path any more, so what you see and what the server stored cannot diverge.
 
 _Last updated: 29 October 2026 — “Ink Register” interface, local fonts, and a full bug-fix
-pass; 99 automated tests and 51 browser checks passing._
+pass; 108 automated tests and 51 browser checks passing._
 
 ---
 
@@ -165,7 +165,7 @@ Named so that nothing is claimed that the code does not do:
 
 ```bash
 node tests/run-tests.mjs      # or: npm test
-# 99 tests, 0 failures
+# 108 tests, 0 failures
 ```
 
 They cover HEX/RGB/CIELAB conversions and all 34 published CIEDE2000 reference pairs, distance
@@ -267,7 +267,8 @@ ChatMT/
 │   ├── server.js         routes, error mapping and the page on the same origin
 │   ├── static-files.js   serves /frontend without leaving its directory
 │   ├── config.js         environment configuration
-│   ├── llm-classifier.js OpenAI-compatible classifier for ambiguous reasons
+│   ├── env-file.js       dependency-free .env reader, used at startup only
+│   ├── llm-classifier.js OpenAI-compatible (DeepSeek) classifier for ambiguous reasons
 │   ├── services/         interaction orchestration and image transforms
 │   └── storage/          atomic JSON file adapter for the Memory Engine
 ├── frontend/             the interface: API client, HTML, CSS, local fonts
@@ -316,8 +317,17 @@ A phase is only started when the previous one has a working version and document
 
 ## Settings
 
-Backend: environment variables only, documented in `docs/backend-api.md`. The optional
-language model uses `ZAI_API_BASE` / `ZAI_API_KEY` (or `CHATMT_LLM_*`) and is not required.
+Backend: the local `.env` file, read at startup (template and full list: `.env.example`, then
+`docs/backend-api.md`). Copy the template and paste the DeepSeek key:
+
+```bash
+cp .env.example .env      # then edit DEEPSEEK_API_KEY
+npm start                 # the log says which model is in use, or that none is configured
+```
+
+The model is optional: without `DEEPSEEK_API_KEY` the server starts normally, no text leaves the
+machine, and an ambiguous reason stays undecided instead of being stored. An exported variable
+always wins over the file.
 
 Interface: the user id comes from the URL (`?user=<name>`, default `local-user`). It names the
 memory profile on the server; changing it switches to a different, separate memory.

@@ -8,7 +8,7 @@
  * It also serves the interface from /frontend, on the same origin as /api: one command starts
  * the whole application.
  *
- * Start:  npm start
+ * Start:  npm start   (reads the local .env, including DEEPSEEK_API_KEY)
  * Open:   http://127.0.0.1:3080/
  * Docs:   docs/backend-api.md
  */
@@ -17,12 +17,14 @@ import http from 'node:http';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { loadConfig } from './config.js';
+import { loadConfig, REPOSITORY_ROOT } from './config.js';
+import { loadEnvFile } from './env-file.js';
 import { loadStandards } from './standards-loader.js';
 import { createFileAdapter, StorageError } from './storage/file-adapter.js';
 import { createLlmClassifier } from './llm-classifier.js';
 import { createInteractionService } from './services/interaction-service.js';
 import { createImageService } from './services/image-service.js';
+import { createComposeService } from './services/compose-service.js';
 import { ApiError, badRequest, notFound } from './errors.js';
 import { readStaticFile } from './static-files.js';
 
@@ -117,6 +119,12 @@ export function createServer(config = loadConfig()) {
     llm
   });
   const images = createImageService(config.image);
+  const composition = createComposeService({
+    meaningStandard: standards.meanings,
+    palette: PALETTE,
+    standingFor: (userId) => service.standingFor(userId).profile,
+    images
+  });
 
   const routes = [
     {
@@ -129,7 +137,12 @@ export function createServer(config = loadConfig()) {
           usage: { id: standards.usage.id, version: standards.usage.version, rules: standards.usage.rules?.length ?? 0 },
           meanings: { id: standards.meanings.id, version: standards.meanings.version }
         },
-        llm: { configured: llm.configured, model: llm.configured ? llm.model : null },
+        llm: {
+          configured: llm.configured,
+          model: llm.configured ? llm.model : null,
+          thinking: llm.configured ? llm.thinking : null,
+          reasoning_effort: llm.configured && llm.thinking === 'enabled' ? llm.reasoningEffort : null
+        },
         storage: { type: 'json-file' },
         frontend: { served_at: '/frontend/' }
       })
@@ -248,6 +261,18 @@ export function createServer(config = loadConfig()) {
       pattern: /^\/api\/design\/transform$/,
       handler: async ({ body }) =>
         images.transform({ image: body.image, operations: body.operations, format: body.format })
+    },
+    {
+      method: 'POST',
+      pattern: /^\/api\/design\/compose$/,
+      handler: async ({ body }) =>
+        composition.compose({
+          userId: userIdFrom(String(body.userId ?? '')),
+          colour: body.colour ?? { name: body.colourName, hex: body.hex },
+          design: body.design,
+          image: body.image ?? null,
+          variant: body.variant
+        })
     }
   ];
 
@@ -345,13 +370,26 @@ function isMainModule() {
 }
 
 if (isMainModule()) {
+  // The local .env is read before the configuration, so one file holds the key and the model.
+  // An exported variable always wins, and a missing file is silent: the server then runs with
+  // the declared defaults and no language model.
+  const envFile = loadEnvFile({ path: path.join(REPOSITORY_ROOT, '.env') });
   const config = loadConfig();
   const server = createServer(config);
   server.listen(config.port, config.host, () => {
     const address = server.address();
     const port = typeof address === 'object' && address !== null ? address.port : config.port;
-    const llmState = config.llm.configured ? `LLM: ${config.llm.model}` : 'LLM: not configured (ambiguous reasons stay undecided)';
+    const llmState = config.llm.configured
+      ? `LLM: ${config.llm.model} (thinking ${config.llm.thinking}, effort ${config.llm.reasoningEffort})`
+      : 'LLM: not configured (ambiguous reasons stay undecided)';
     console.log(`ChatMT backend listening on http://${config.host}:${port} — ${llmState}`);
+    if (envFile.found) {
+      console.log(
+        `.env loaded from ${envFile.path}: ${envFile.loaded.length === 0 ? 'no new variables (the environment already set them)' : envFile.loaded.join(', ')}`
+      );
+    } else {
+      console.log('No .env file: set DEEPSEEK_API_KEY in the environment to enable the language model.');
+    }
     console.log(`Data directory: ${config.dataDir}`);
   });
 

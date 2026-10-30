@@ -1,15 +1,22 @@
 /**
  * Backend configuration.
  *
- * No dependency reads a .env file: the variables are read from the process environment, so a
- * secret never has to be written into the repository. Every value has a declared default, and
- * an invalid value stops the server at startup instead of being silently replaced.
+ * Values come from the process environment, after backend/env-file.js has read the local .env
+ * file (see server.js). A secret still never has to be written into a tracked file: .env is
+ * ignored by git and an exported variable wins over the file. Every value has a declared default,
+ * and an invalid value stops the server at startup instead of being silently replaced.
+ *
+ * The language model is DeepSeek by default (OpenAI-compatible endpoint). The older Z.ai names
+ * are still accepted, so an existing shell keeps working without being edited.
  */
 
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const REPOSITORY_ROOT = fileURLToPath(new URL('..', import.meta.url));
+
+const DEFAULT_LLM_API_BASE = 'https://api.deepseek.com';
+const DEFAULT_LLM_MODEL = 'deepseek-flash';
 
 const DEFAULT_ORIGINS = [
   'http://localhost:8000',
@@ -33,6 +40,15 @@ function text(value) {
   return trimmed === '' ? null : trimmed;
 }
 
+function choice(value, fallback, { allowed, name }) {
+  const raw = text(value);
+  if (raw === null) return fallback;
+  if (!allowed.includes(raw)) {
+    throw new RangeError(`${name} must be one of ${allowed.join(', ')}; received ${JSON.stringify(value)}.`);
+  }
+  return raw;
+}
+
 function originList(value) {
   const raw = text(value);
   if (raw === null) return DEFAULT_ORIGINS;
@@ -43,8 +59,12 @@ function originList(value) {
  * @param {Record<string, string|undefined>} [env]
  */
 export function loadConfig(env = process.env) {
-  const llmApiBase = text(env.CHATMT_LLM_API_BASE) ?? text(env.ZAI_API_BASE);
-  const llmApiKey = text(env.CHATMT_LLM_API_KEY) ?? text(env.ZAI_API_KEY);
+  const llmApiBase =
+    text(env.CHATMT_LLM_API_BASE) ??
+    text(env.DEEPSEEK_API_BASE) ??
+    text(env.ZAI_API_BASE) ??
+    DEFAULT_LLM_API_BASE;
+  const llmApiKey = text(env.CHATMT_LLM_API_KEY) ?? text(env.DEEPSEEK_API_KEY) ?? text(env.ZAI_API_KEY);
 
   return Object.freeze({
     host: text(env.CHATMT_HOST) ?? '127.0.0.1',
@@ -80,13 +100,26 @@ export function loadConfig(env = process.env) {
     llm: Object.freeze({
       apiBase: llmApiBase,
       apiKey: llmApiKey,
-      model: text(env.CHATMT_LLM_MODEL) ?? text(env.ZAI_MODEL) ?? 'glm-4-flash',
-      timeoutMs: integer(env.CHATMT_LLM_TIMEOUT_MS, 6000, {
+      model:
+        text(env.CHATMT_LLM_MODEL) ?? text(env.DEEPSEEK_MODEL) ?? text(env.ZAI_MODEL) ?? DEFAULT_LLM_MODEL,
+      // DeepSeek thinking mode: the provider takes a top-level "thinking" object and a
+      // reasoning effort. With thinking disabled neither parameter is sent at all.
+      thinking: choice(env.CHATMT_LLM_THINKING, 'enabled', {
+        allowed: ['enabled', 'disabled'],
+        name: 'CHATMT_LLM_THINKING'
+      }),
+      reasoningEffort: choice(env.CHATMT_LLM_REASONING_EFFORT, 'high', {
+        allowed: ['minimal', 'low', 'medium', 'high'],
+        name: 'CHATMT_LLM_REASONING_EFFORT'
+      }),
+      // A reasoning model answers in seconds, not in milliseconds: 6 s was too short for the
+      // thinking stages, so the declared default is larger and still bounded.
+      timeoutMs: integer(env.CHATMT_LLM_TIMEOUT_MS, 20_000, {
         minimum: 500,
-        maximum: 30_000,
+        maximum: 60_000,
         name: 'CHATMT_LLM_TIMEOUT_MS'
       }),
-      configured: Boolean(llmApiBase && llmApiKey)
+      configured: Boolean(llmApiKey)
     })
   });
 }

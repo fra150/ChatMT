@@ -63,6 +63,9 @@ const dom = {
   status: document.getElementById('app-status'),
   userId: document.getElementById('user-id'),
   apiBase: document.getElementById('api-base'),
+  llmState: document.getElementById('llm-state'),
+  themeToggle: document.getElementById('theme-toggle'),
+  themeValue: document.getElementById('theme-value'),
   spectralRegister: document.getElementById('spectral-register'),
   heroSpecimenField: document.getElementById('hero-specimen-field'),
   heroSpecimenName: document.getElementById('hero-specimen-name'),
@@ -112,6 +115,13 @@ const dom = {
   backgroundReason: document.getElementById('background-reason'),
   backgroundSend: document.getElementById('background-send'),
   backgroundResult: document.getElementById('background-result'),
+  composeRun: document.getElementById('compose-run'),
+  composeStatus: document.getElementById('compose-status'),
+  composePreview: document.getElementById('compose-preview'),
+  composeEmpty: document.getElementById('compose-empty'),
+  composeCaption: document.getElementById('compose-caption'),
+  composeDownload: document.getElementById('compose-download'),
+  composeNotes: document.getElementById('compose-notes'),
   matches: document.getElementById('matches'),
   memoryStatus: document.getElementById('memory-status'),
   memoryList: document.getElementById('memory-list'),
@@ -135,7 +145,8 @@ const state = {
   backgroundQuestionColour: null,
   requestToken: 0,
   imageOriginal: null,
-  brighten: 100
+  brighten: 100,
+  composeUrl: null
 };
 
 const RAINBOW_ORDER = ['red', 'orange', 'yellow', 'green', 'blue', 'indigo', 'violet'];
@@ -203,6 +214,34 @@ function hideTyping() {
   document.getElementById('chat-typing')?.remove();
 }
 
+// ---------------------------------------------------------------------------------------
+// Theme: white (the ink register) and blue (the blueprint)
+// ---------------------------------------------------------------------------------------
+
+const THEMES = ['white', 'blue'];
+
+/**
+ * The theme lives in the page, not in storage: `?theme=blue` reopens the blueprint, and the
+ * switch rewrites the address so a reload keeps the choice. Nothing is written to localStorage,
+ * like every other piece of state in this page: the server and the URL are the only memory.
+ */
+function applyTheme(theme) {
+  const next = THEMES.includes(theme) ? theme : 'white';
+  document.documentElement.dataset.theme = next;
+  dom.themeToggle?.setAttribute('aria-pressed', String(next === 'blue'));
+  if (dom.themeValue) dom.themeValue.textContent = next;
+  const url = new URL(window.location.href);
+  if (url.searchParams.get('theme') === next) return;
+  url.searchParams.set('theme', next);
+  window.history.replaceState(null, '', url);
+}
+
+dom.themeToggle?.addEventListener('click', () => {
+  applyTheme(document.documentElement.dataset.theme === 'blue' ? 'white' : 'blue');
+});
+
+applyTheme(params.get('theme') ?? 'white');
+
 dom.userId.textContent = state.userId;
 dom.apiBase.textContent = '/api';
 state.api = new URL('/api/', window.location.origin);
@@ -228,7 +267,12 @@ async function api(pathname, { method = 'GET', body } = {}) {
   const text = await response.text();
   const payload = text === '' ? null : JSON.parse(text);
   if (!response.ok) {
-    throw new Error(payload?.error?.message ?? `HTTP ${response.status} from ${url.pathname}`);
+    const error = new Error(payload?.error?.message ?? `HTTP ${response.status} from ${url.pathname}`);
+    // The code travels with the error so a panel can explain the refusal instead of only
+    // repeating the server sentence.
+    error.code = payload?.error?.code ?? null;
+    error.status = response.status;
+    throw error;
   }
   return payload;
 }
@@ -260,9 +304,10 @@ function designContext() {
 
 async function init() {
   try {
-    const [palette, types] = await Promise.all([api('/palette'), api('/design/types')]);
+    const [palette, types, health] = await Promise.all([api('/palette'), api('/design/types'), api('/health')]);
     state.palette = palette.colours;
     state.designTypes = types.types;
+    renderLlmState(health?.llm ?? null);
   } catch (error) {
     showStatus(error.message);
     return;
@@ -272,8 +317,27 @@ async function init() {
   renderSpectralRegister();
   renderDesignTypes();
   renderPlaceholders();
+  syncComposeButton();
 
   await Promise.all([refreshProfile(), refreshMemory()]);
+}
+
+/**
+ * The model line in the press bar. It states what the server reported, and it never shows the
+ * key: /api/health returns whether a model is configured, its name and how it thinks.
+ */
+function renderLlmState(llm) {
+  if (!dom.llmState) return;
+  if (llm?.configured) {
+    const mode = llm.thinking === 'disabled' ? 'thinking off' : `thinking ${llm.reasoning_effort ?? 'high'}`;
+    dom.llmState.textContent = `${llm.model} · ${mode}`;
+    dom.llmState.title =
+      'The reason of a red or yellow choice is sent to this model only when the declared rules cannot decide. The key stays on the server.';
+    return;
+  }
+  dom.llmState.textContent = 'not configured';
+  dom.llmState.title =
+    'No key in .env: an ambiguous reason stays undecided, and nothing is stored. Set DEEPSEEK_API_KEY and restart the server.';
 }
 
 function renderDesignTypes() {
@@ -400,6 +464,7 @@ async function selectColour(colour) {
   dom.answer.replaceChildren(h('p', { class: 'hint', text: 'Waiting for the backend…' }));
   renderSelection();
   renderPalette();
+  syncComposeButton();
   await interact({ reason: null });
 }
 
@@ -1151,6 +1216,106 @@ async function sendChatMessage(raw) {
 }
 
 // ---------------------------------------------------------------------------------------
+// Automatic composition: the app does the layout, the crop and the copy
+// ---------------------------------------------------------------------------------------
+
+/**
+ * One press, no manual work: the server places the photo, writes the text and returns an SVG.
+ * The SVG is never parsed into the document — it becomes an object URL and travels into an
+ * <img>, which is how the rule "no SVG markup in the page, no innerHTML" survives this feature.
+ */
+async function composeAutomatically() {
+  if (state.selection === null) {
+    showComposeMessage('Pick a colour from the palette first: the composition uses the colour you chose.', []);
+    return;
+  }
+  if (dom.composeRun) dom.composeRun.disabled = true;
+  if (dom.composeStatus) dom.composeStatus.textContent = 'Composing on the server…';
+  try {
+    const response = await api('/design/compose', {
+      method: 'POST',
+      body: {
+        userId: state.userId,
+        colour: { name: state.selection.name, hex: state.selection.hex },
+        design: designContext(),
+        ...(state.imageOriginal === null ? {} : { image: state.imageOriginal })
+      }
+    });
+    clearStatus();
+    renderComposition(response);
+  } catch (error) {
+    showStatus(error.message);
+    const hints =
+      error.code === 'background_not_questioned'
+        ? [
+            `${state.selection.name} is a questioned colour: ask for that background in the “A red or yellow background” panel, give a cogent reason, then compose again.`
+          ]
+        : error.code === 'invalid_image' || error.code === 'image_too_large'
+          ? ['The photo could not be used: png, jpeg or bmp up to 8 MB and 8000 px per side.']
+          : [];
+    showComposeMessage(`The composition failed: ${error.message}`, hints);
+  } finally {
+    syncComposeButton();
+  }
+}
+
+/** The failure is explained where the button is, not only in the banner at the top. */
+function showComposeMessage(title, hints = []) {
+  if (dom.composeStatus) dom.composeStatus.textContent = '';
+  if (dom.composeNotes) {
+    dom.composeNotes.replaceChildren(
+      h('p', { text: title }),
+      ...hints.map((line) => h('p', { class: 'hint', text: line }))
+    );
+  }
+}
+
+function syncComposeButton() {
+  if (!dom.composeRun) return;
+  const ready = state.selection !== null;
+  dom.composeRun.disabled = !ready;
+  dom.composeRun.title = ready ? 'The app places the photo, writes the text and returns an SVG.' : 'Choose a colour first';
+}
+
+function renderComposition(result) {
+  if (state.composeUrl !== null) URL.revokeObjectURL(state.composeUrl);
+  state.composeUrl = URL.createObjectURL(new Blob([result.svg], { type: 'image/svg+xml' }));
+
+  dom.composePreview.src = state.composeUrl;
+  dom.composePreview.alt = `Composed ${result.design.label}: ${result.copy.headline}`;
+  dom.composePreview.hidden = false;
+  if (dom.composeEmpty) dom.composeEmpty.hidden = true;
+  if (dom.composeDownload) {
+    dom.composeDownload.href = state.composeUrl;
+    dom.composeDownload.download = `chatmt-${result.design.type}-${result.colour.colour_name}.svg`;
+    dom.composeDownload.hidden = false;
+  }
+  if (dom.composeStatus) {
+    dom.composeStatus.textContent =
+      `Composed ${result.design.width}×${result.design.height} · ${result.svg_bytes} bytes · ` +
+      `${result.svg.split('\n').length > 1 ? 'multi-line' : 'single-line'} SVG.`;
+  }
+  if (dom.composeCaption) {
+    dom.composeCaption.textContent =
+      `${result.layout.label} · ${result.colour.colour_name} ${result.colour.hex} · ` +
+      (result.photo === null ? 'no photo: colour field' : 'photo placed automatically');
+  }
+
+  dom.composeNotes.replaceChildren(
+    h('h3', { class: 'group-title', text: 'What the app did' }),
+    ...result.actions.map((line) => h('p', { class: 'hint', text: `— ${line}` })),
+    h('h3', { class: 'group-title', text: 'Text written by the app' }),
+    h('p', { class: 'hint', text: `kicker: ${result.copy.kicker}` }),
+    h('p', { class: 'hint', text: `headline: ${result.copy.headline}` }),
+    ...(result.copy.subhead === null ? [] : [h('p', { class: 'hint', text: `subhead: ${result.copy.subhead}` })]),
+    h('p', { class: 'hint', text: `body: ${result.copy.body}` }),
+    h('p', { class: 'hint', text: `footer: ${result.copy.footer}` }),
+    ...result.warnings.map((line) => h('p', { class: 'hint', text: line })),
+    h('p', { class: 'hint', text: result.choice.note })
+  );
+}
+
+// ---------------------------------------------------------------------------------------
 // Photo studio: upload + brighten (local canvas filter) + crop (server API)
 // ---------------------------------------------------------------------------------------
 
@@ -1207,6 +1372,7 @@ dom.consent.addEventListener('change', () => {
 dom.clearMemory.addEventListener('click', clearMemory);
 dom.reasonSend.addEventListener('click', sendReason);
 dom.designUpdate.addEventListener('click', updateSuggestions);
+dom.composeRun?.addEventListener('click', composeAutomatically);
 dom.backgroundAsk.addEventListener('click', askForBackground);
 dom.backgroundSend.addEventListener('click', sendBackgroundReason);
 dom.correctionRecord.addEventListener('click', recordCorrection);

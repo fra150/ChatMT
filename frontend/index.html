@@ -29,6 +29,10 @@
         <div class="topbar-chips" aria-label="Session">
           <span class="chip"><span class="chip-key">user</span><code id="user-id">local-user</code></span>
           <span class="chip"><span class="chip-key">api</span><code id="api-base">/api</code></span>
+          <span class="chip"><span class="chip-key">model</span><code id="llm-state">reading…</code></span>
+          <button id="theme-toggle" class="theme-toggle" type="button" aria-pressed="false" title="Switch between the white sheet and the blue blueprint">
+            <span class="chip-key">theme</span><span id="theme-value" class="theme-value">white</span>
+          </button>
         </div>
       </div>
       <div class="spectral" aria-hidden="true">
@@ -199,9 +203,36 @@
           <p id="image-status" class="hint" role="status"></p>
         </section>
 
-        <section class="plate plate-questioned" aria-labelledby="background-heading">
+        <!-- Automatic composition: the app does the layout, the crop and the copy -->
+        <section class="plate plate-compose" aria-labelledby="compose-heading">
           <div class="plate-head">
             <span class="plate-num" aria-hidden="true">09</span>
+            <div class="plate-heading">
+              <h2 id="compose-heading">Your flyer, composed</h2>
+              <p class="plate-note">photo placed · text written · one press</p>
+            </div>
+          </div>
+          <p class="hint">
+            The app does the graphic work here. It fits your photo into the frame (no manual crop), places a scrim so
+            the text stays readable, wraps the headline and writes the copy from the meaning of the colour you chose.
+            You press once and type nothing.
+          </p>
+          <div class="controls controls-inline compose-controls">
+            <button id="compose-run" type="button" disabled title="Choose a colour first">Compose it for me</button>
+            <a id="compose-download" class="link-button" href="#" download="chatmt-design.svg" hidden>Download SVG</a>
+            <span id="compose-status" class="hint" role="status"></span>
+          </div>
+          <figure class="compose-frame">
+            <img id="compose-preview" alt="The design composed by ChatMT" hidden />
+            <p id="compose-empty" class="hint">Pick a colour, then press once: the app composes the design.</p>
+            <figcaption id="compose-caption" class="hint"></figcaption>
+          </figure>
+          <div id="compose-notes"></div>
+        </section>
+
+        <section class="plate plate-questioned" aria-labelledby="background-heading">
+          <div class="plate-head">
+            <span class="plate-num" aria-hidden="true">10</span>
             <div class="plate-heading">
               <h2 id="background-heading">A red or yellow background</h2>
               <p class="plate-note">on request · cogent reason required</p>
@@ -230,7 +261,7 @@
 
         <section class="plate" aria-labelledby="matches-heading">
           <div class="plate-head">
-            <span class="plate-num" aria-hidden="true">10</span>
+            <span class="plate-num" aria-hidden="true">11</span>
             <div class="plate-heading">
               <h2 id="matches-heading">Matches and contradictions</h2>
               <p class="plate-note">nearest standard · uncertainty</p>
@@ -243,7 +274,7 @@
 
         <section class="plate" aria-labelledby="why-heading">
           <div class="plate-head">
-            <span class="plate-num" aria-hidden="true">11</span>
+            <span class="plate-num" aria-hidden="true">12</span>
             <div class="plate-heading">
               <h2 id="why-heading">Why this answer</h2>
               <p class="plate-note">data · rules · limits</p>
@@ -256,7 +287,7 @@
 
         <section class="plate" aria-labelledby="correction-heading">
           <div class="plate-head">
-            <span class="plate-num" aria-hidden="true">12</span>
+            <span class="plate-num" aria-hidden="true">13</span>
             <div class="plate-heading">
               <h2 id="correction-heading">Correction</h2>
               <p class="plate-note">a separate record · never automatic</p>

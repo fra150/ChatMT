@@ -6,7 +6,7 @@
   la risposta, il profilo, la memoria e i suggerimenti da queste API, che servono anche la pagina
   sulla stessa origine. I font sono locali (`frontend/fonts/`) e non vengono richiesti a servizi
   esterni.
-- **Test:** 99 test automatici superati, 51 controlli nel browser superati.
+- **Test:** 108 test automatici superati, 51 controlli nel browser superati.
 - **Linguaggio:** codice e identificativi in inglese, documentazione in italiano, come nel resto
   del progetto.
 
@@ -82,13 +82,21 @@ essere sostituito in silenzio.
 | `CHATMT_MAX_IMAGE_BYTES` | `8388608` (8 MiB) | limite dell'immagine decodificata |
 | `CHATMT_MAX_IMAGE_DIMENSION` | `8000` | limite per lato dell'immagine |
 | `CHATMT_MAX_IMAGE_PIXELS` | `40000000` | limite dei pixel totali |
-| `CHATMT_LLM_API_BASE` o `ZAI_API_BASE` | assente | endpoint OpenAI-compatible, senza `/chat/completions` finale |
-| `CHATMT_LLM_API_KEY` o `ZAI_API_KEY` | assente | chiave del modello, solo sul server |
-| `CHATMT_LLM_MODEL` o `ZAI_MODEL` | `glm-4-flash` | nome del modello |
-| `CHATMT_LLM_TIMEOUT_MS` | `6000` | timeout della chiamata al modello |
+| `CHATMT_LLM_API_BASE`, `DEEPSEEK_API_BASE` o `ZAI_API_BASE` | `https://api.deepseek.com` | endpoint OpenAI-compatible, senza `/chat/completions` finale |
+| `CHATMT_LLM_API_KEY`, `DEEPSEEK_API_KEY` o `ZAI_API_KEY` | assente | chiave del modello, solo sul server |
+| `CHATMT_LLM_MODEL`, `DEEPSEEK_MODEL` o `ZAI_MODEL` | `deepseek-flash` | nome del modello |
+| `CHATMT_LLM_THINKING` | `enabled` | modalità di ragionamento DeepSeek: `enabled` o `disabled` |
+| `CHATMT_LLM_REASONING_EFFORT` | `high` | sforzo di ragionamento: `minimal`, `low`, `medium`, `high` |
+| `CHATMT_LLM_TIMEOUT_MS` | `20000` | timeout della chiamata al modello (un modello che ragiona risponde in secondi) |
 
 La chiave non viene mai restituita dall'API, non viene scritta nei dati e non compare nei log.
-Non esiste un file `.env` caricato automaticamente: le variabili vanno esportate nella shell.
+
+All'avvio `npm start` legge `ChatMT/.env` (`backend/env-file.js`, nessuna dipendenza): un file
+`KEY=VALUE` con commenti, `export` opzionale e virgolette. Il file è ignorato da git; il template
+con tutte le variabili è `.env.example`, che invece è versionato e non contiene chiavi. Una
+variabile esportata nella shell **vince** sempre sul file, e un file assente non è un errore: il
+server parte con i valori dichiarati e senza modello. Il caricamento avviene solo quando
+`backend/server.js` è avviato come programma, non quando i test lo importano.
 
 ---
 
@@ -225,6 +233,7 @@ Base: `http://127.0.0.1:3080`. Tutte le risposte sono JSON. Gli errori hanno la 
 | POST | `/api/design/suggestions` | suggerimenti senza salvare nulla |
 | POST | `/api/design/backgrounds` | richiesta di uno sfondo rosso o giallo |
 | POST | `/api/design/transform` | crop, resize, rotate, conversione |
+| POST | `/api/design/compose` | il design composto dall'app: foto impaginata, testi scritti, SVG |
 | GET | `/` e `/frontend/...` | l'interfaccia, sulla stessa origine |
 
 `userId` deve corrispondere a `[A-Za-z0-9_-]{1,64}`.
@@ -431,7 +440,49 @@ Regole:
 - limiti di byte, lato e pixel da configurazione;
 - nessun ridimensionamento oltre 8000 px per lato.
 
-### 6.7 Codici di errore
+### 6.7 `POST /api/design/compose`
+
+Il passo automatico chiesto dal creatore il 30 ottobre: **una volta scelto il colore, l'app fa il
+lavoro grafico** — impagina la foto, mette lo scrim, va a capo il titolo e scrive i testi. L'utente
+preme una volta e non ritaglia e non scrive nulla.
+
+```json
+{
+  "userId": "local-user",
+  "colour": { "name": "blue" },
+  "design": { "type": "banner", "subject": "Jazz night", "audience": "Students" },
+  "image": "data:image/png;base64,..."
+}
+```
+
+`image` è opzionale: senza foto la cornice viene riempita da un campo geometrico costruito sul
+colore. La composizione è **deterministica**: stessi ingressi, stesso SVG.
+
+| Campo della risposta | Contenuto |
+|---|---|
+| `layout` | `id` (`stack`, `band-right`, `cover`), etichetta, margine di sicurezza |
+| `copy` | `kicker`, `headline`, `subhead`, `body`, `footer` scritti dall'app |
+| `photo` | dimensioni, `treatment: "cover-fit, centred, automatic"`, `resized`, byte; `null` senza foto |
+| `actions` | cosa ha fatto l'app, una riga per azione (foto adattata, scrim, testi mandati a capo) |
+| `warnings` | ciò che va dichiarato (nessuna foto, colore interrogato) |
+| `svg` / `svg_bytes` | il documento SVG e la sua dimensione |
+| `choice` | `by: "user"` — l'app compone, non sceglie il colore |
+
+Regole:
+
+- il colore deve appartenere alla tavolozza (`unknown_colour` altrimenti) e avere un significato
+  registrato per il testo;
+- rosso e giallo si compongono **solo** se il profilo salvato ha `allow_questioned_colours: true`,
+  cioè se una ragione cogente per quel colore è già registrata: la porta è il profilo, non un
+  parametro (`400 background_not_questioned`);
+- la foto passa dagli stessi limiti di `/api/design/transform` (byte, lato, pixel) e viene
+  riportata a un massimo di 1600 px di larghezza in JPEG, senza cambiarne le proporzioni;
+- nessun testo è scritto in memoria: `stored` è `null`.
+
+L'SVG **non entra mai nel documento**: il frontend lo converte in un object URL e lo mostra in un
+`<img>`, con un link di download. La regola "niente `innerHTML`, niente SVG nel DOM" resta vera.
+
+### 6.8 Codici di errore
 
 | Stato | Codici |
 |---|---|
@@ -451,16 +502,23 @@ Il percorso normale è offline: le regole dichiarate decidono i casi chiari. Il 
 chiamato **solo** quando le regole restituiscono `needs_review` e una chiave è configurata.
 
 Il backend parla il protocollo OpenAI-compatible (`POST {base}/chat/completions`). Il provider
-raccomandato è **Z.ai** (modelli GLM, endpoint compatibile, chiave gratuita disponibile), ma
-qualunque endpoint compatibile funziona:
+dichiarato è **DeepSeek**. Non serve l'SDK `openai`: `backend/llm-classifier.js` fa la stessa
+richiesta HTTP con `fetch`, quindi il progetto non aggiunge dipendenze.
 
 ```bash
-# esempio: Z.ai
-export ZAI_API_BASE="https://api.z.ai/api/paas/v4"
-export ZAI_API_KEY="..."
-export ZAI_MODEL="glm-4-flash"
-npm start
+# ChatMT/.env (ignorato da git)
+DEEPSEEK_API_KEY=sk-...
+CHATMT_LLM_API_BASE=https://api.deepseek.com
+CHATMT_LLM_MODEL=deepseek-flash
+CHATMT_LLM_THINKING=enabled
+CHATMT_LLM_REASONING_EFFORT=high
 ```
+
+Il corpo della richiesta riproduce i parametri DeepSeek: `thinking: {"type":"enabled"}` e
+`reasoning_effort`, più `response_format: {"type":"json_object"}` e `temperature: 0`. Con
+`CHATMT_LLM_THINKING=disabled` i due parametri di ragionamento non vengono inviati affatto, così
+un endpoint che non li conosce non li riceve. Il ragionamento del modello non viene letto né
+salvato: si usa solo `choices[0].message.content`.
 
 Comportamento dichiarato:
 
@@ -531,7 +589,9 @@ Dichiarato per non promettere ciò che non è stato costruito:
 1. **Non fa autenticazione.** L'interfaccia è collegata, ma chiunque raggiunga il server può
    usare qualsiasi `userId` (vedi §9).
 2. **Non genera immagini con un modello.** I suggerimenti sono specifiche deterministiche
-   (CSS + SVG), non fotografie né rendering. Non c'è un modello di image generation.
+   (CSS + SVG), non fotografie né rendering, e la composizione automatica (`/api/design/compose`)
+   impagina la foto caricata dall'utente e scrive i testi: non inventa né immagini né fotografie.
+   Non c'è un modello di image generation.
 3. **Non è un editor grafico completo.** Fa crop, resize, rotazione a quarti di giro e
    conversione png/jpeg/bmp. Non fa livelli, testi, filtri, maschere, webp o gif in uscita.
 4. **Non capisce il linguaggio.** Le regole lessicali non sono comprensione del testo; il
@@ -553,7 +613,7 @@ Eseguiti il 29 ottobre 2026 su Windows, Node.js v26.5.0.
 
 | Comando | Risultato |
 |---|---|
-| `node tests/run-tests.mjs` | **99/99** test superati |
+| `node tests/run-tests.mjs` | **108/108** test superati |
 | `node tests/browser-checks.mjs` | **51/51** controlli superati (lo script avvia da sé il backend) |
 
 I test coprono in particolare, per le regole del 29 ottobre:

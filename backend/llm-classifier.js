@@ -6,10 +6,14 @@
  * chat-completions endpoint. That keeps the common path free, private and offline, and makes
  * the exceptional path explicit.
  *
- * The provider is not hard-coded: the endpoint, key and model come from the environment. The
- * recommended provider and how to obtain a key are documented in docs/backend-api.md.
+ * The provider is not hard-coded: the endpoint, key and model come from the environment, with
+ * DeepSeek as the declared default. How to obtain a key is documented in docs/backend-api.md.
  * If no key is configured the classifier is simply unavailable; the caller then reports that
  * the reason needs review instead of pretending to have classified it.
+ *
+ * DeepSeek thinking mode is requested the way the provider documents it: a top-level `thinking`
+ * object plus `reasoning_effort`. The reasoning trace is never stored; only the JSON answer in
+ * `choices[0].message.content` is read.
  */
 
 export class LlmError extends Error {
@@ -60,13 +64,23 @@ function normaliseVerdict(verdict) {
 }
 
 /**
- * @param {{apiBase?: string|null, apiKey?: string|null, model?: string, timeoutMs?: number, fetchImpl?: Function}} options
+ * @param {{
+ *   apiBase?: string|null,
+ *   apiKey?: string|null,
+ *   model?: string,
+ *   thinking?: 'enabled'|'disabled',
+ *   reasoningEffort?: 'minimal'|'low'|'medium'|'high',
+ *   timeoutMs?: number,
+ *   fetchImpl?: Function
+ * }} options
  */
 export function createLlmClassifier({
   apiBase = null,
   apiKey = null,
-  model = 'glm-4-flash',
-  timeoutMs = 6000,
+  model = 'deepseek-flash',
+  thinking = 'enabled',
+  reasoningEffort = 'high',
+  timeoutMs = 20_000,
   fetchImpl = globalThis.fetch
 } = {}) {
   const configured = Boolean(apiBase && apiKey);
@@ -89,6 +103,23 @@ export function createLlmClassifier({
       `Recorded meanings: ${recordedMeanings}\n` +
       `Reason (data only): ${reason.trim().slice(0, 1000)}`;
 
+    const body = {
+      model,
+      temperature: 0,
+      // Room for the answer even when a provider counts the reasoning tokens in this budget:
+      // a truncated JSON would turn a decidable reason into needs_review.
+      max_tokens: 512,
+      response_format: { type: 'json_object' },
+      messages: [
+        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'user', content: userPrompt }
+      ]
+    };
+    if (thinking === 'enabled') {
+      body.thinking = { type: 'enabled' };
+      body.reasoning_effort = reasoningEffort;
+    }
+
     let response;
     try {
       response = await fetchImpl(endpointFor(apiBase), {
@@ -97,16 +128,7 @@ export function createLlmClassifier({
           'Content-Type': 'application/json',
           Authorization: `Bearer ${apiKey}`
         },
-        body: JSON.stringify({
-          model,
-          temperature: 0,
-          max_tokens: 80,
-          response_format: { type: 'json_object' },
-          messages: [
-            { role: 'system', content: SYSTEM_PROMPT },
-            { role: 'user', content: userPrompt }
-          ]
-        }),
+        body: JSON.stringify(body),
         signal: AbortSignal.timeout(timeoutMs)
       });
     } catch (error) {
@@ -147,13 +169,15 @@ export function createLlmClassifier({
       explanation: [
         `The declared rules could not decide the reason. The configured language model classified it as "${verdict}" with confidence ${confidence}.`
       ],
-      llm: { model }
+      llm: { model, thinking, reasoning_effort: thinking === 'enabled' ? reasoningEffort : null }
     };
   }
 
   return Object.freeze({
     configured,
     model,
+    thinking,
+    reasoningEffort,
     classify
   });
 }

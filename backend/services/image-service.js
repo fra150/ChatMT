@@ -63,15 +63,10 @@ export function createImageService(limits) {
   }
 
   /**
-   * @param {{image: string, operations?: Array<object>, format?: string}} input
+   * One place decodes and validates an uploaded image, so the transform route and the
+   * composition route cannot drift apart on format, byte or size rules.
    */
-  async function transform({ image, operations = [], format } = {}) {
-    const parsedOperations = parseOperations(operations);
-    if (parsedOperations.length === 0 && format === undefined) {
-      throw new ImageOperationError('invalid_request', 'Give at least one operation or an output format.');
-    }
-    const outputFormat = format === undefined ? 'png' : normaliseFormat(format);
-
+  async function loadImage(image) {
     const buffer = decodeBase64(image);
     if (buffer.length > limits.maxBytes) {
       throw new ImageOperationError(
@@ -108,6 +103,52 @@ export function createImageService(limits) {
         `The image is ${source.width}x${source.height}; the limit is ${limits.maxDimension} pixels per side and ${limits.maxPixels} pixels in total.`
       );
     }
+    return { decoded, source };
+  }
+
+  /**
+   * Prepares an uploaded photo for a composition: validates it, shrinks it to a bounded width and
+   * re-encodes it as JPEG. The aspect ratio is never changed: the composer fits the photo with
+   * cover semantics, so the crop stays a layout decision instead of a user task.
+   */
+  async function prepare({ image, maxWidth = 1600 } = {}) {
+    if (!Number.isInteger(maxWidth) || maxWidth < 64 || maxWidth > limits.maxDimension) {
+      throw new TypeError(`maxWidth must be an integer between 64 and ${limits.maxDimension}.`);
+    }
+    const { decoded, source } = await loadImage(image);
+    const sized =
+      source.width > maxWidth
+        ? (() => {
+            const height = Math.max(1, Math.round((source.height * maxWidth) / source.width));
+            decoded.resize({ w: maxWidth, h: height });
+            return { width: maxWidth, height };
+          })()
+        : { width: source.width, height: source.height };
+
+    const output = await decoded.getBuffer('image/jpeg', { quality: 82 });
+    return {
+      mime: 'image/jpeg',
+      format: 'jpeg',
+      source,
+      width: sized.width,
+      height: sized.height,
+      resized: source.width > maxWidth,
+      bytes: output.length,
+      image: `data:image/jpeg;base64,${output.toString('base64')}`
+    };
+  }
+
+  /**
+   * @param {{image: string, operations?: Array<object>, format?: string}} input
+   */
+  async function transform({ image, operations = [], format } = {}) {
+    const parsedOperations = parseOperations(operations);
+    if (parsedOperations.length === 0 && format === undefined) {
+      throw new ImageOperationError('invalid_request', 'Give at least one operation or an output format.');
+    }
+    const outputFormat = format === undefined ? 'png' : normaliseFormat(format);
+
+    const { decoded, source } = await loadImage(image);
 
     for (const operation of parsedOperations) {
       if (operation.type === 'crop') {
@@ -143,5 +184,10 @@ export function createImageService(limits) {
     };
   }
 
-  return Object.freeze({ transform, operations: ['crop', 'resize', 'rotate'], formats: Object.keys(OUTPUT_FORMATS) });
+  return Object.freeze({
+    transform,
+    prepare,
+    operations: ['crop', 'resize', 'rotate'],
+    formats: Object.keys(OUTPUT_FORMATS)
+  });
 }

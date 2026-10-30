@@ -1,0 +1,14 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "installCommand": "npm ci",
+  "outputDirectory": "frontend",
+  "functions": {
+    "api/[...path].js": {
+      "includeFiles": "standards/**",
+      "maxDuration": 60
+    }
+  },
+  "rewrites": [
+    { "source": "/frontend/:path*", "destination": "/:path*" }
+  ]
+}
