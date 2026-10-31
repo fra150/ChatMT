@@ -2,6 +2,11 @@
 
 *A design philosophy for interfaces that measure colour.*
 
+> Since 31 October 2026 the public page is a simpler composer. The Ink Register language
+> described below remains the language of the detailed studio page (`frontend/studio.html`); the
+> public page (`frontend/index.html`) applies it in a quieter, single-column form. The final
+> section records the public composer's rules.
+
 ## The movement
 
 Ink Register treats the screen as a proof sheet, not a dashboard. Paper is the ground; ink is the evidence; colour is a measured fact, never a mood. It refuses the glowing panel, the floating card, the soft gradient that exists only to fill a corner. A page is a sheet, a section is a plate, a value is a specimen. The interface should feel like the table of a master printer at the end of a long day: everything in its place, nothing extra, every hairline drawn twice.
@@ -49,3 +54,29 @@ The live interface applies the movement with these concrete rules:
   treatment, while keyboard focus gets the vermilion outline.
 - **State.** A request token discards out-of-order answers, a failed request removes the typing
   indicator, and a new selection clears the stale reason, delay and correction panels.
+
+## The public composer: Blue Ash
+
+The public page reduces the system to one gesture. The proof-sheet language survives in the
+typography and the paper card, but the page gives the user only one thing to do: describe the
+flyer, optionally attach a photo, press once.
+
+- **Ground.** Blue ash `#ABC0CA`, deepened to `#8FA8B4` at the edges, with a faint paper grain.
+  The composer is a warm paper card `#F8F4EA`; the ink is `#13232B`; the action is deep teal
+  `#123B49`; the exception is proofing vermilion `#C05B3B`.
+- **One composition.** The headline is set once, large, in Gloock; the argument is Instrument
+  Sans; the metadata and the hints are Geist Mono. There is no second display type, no badge
+  wall, no palette grid. The generated background is the only image on the page.
+- **Text first.** The textarea is the largest control and the only required input. The photo is
+  an optional attachment, not a step. The create button is the only filled shape on the card.
+- **The rules are elsewhere.** The page links to GitHub instead of reproducing the standards.
+  The user sees the consequence of a rule (tone, delay, number of backgrounds), not the rule
+  table.
+- **Generated backgrounds.** The background suggestions are images produced by the model from a
+  colour-and-motif prompt, cached on the server. They are shown as cards; choosing one recomposes
+  the flyer without storing anything. The gradient fallback is honest about the missing model.
+- **Responsive rule.** The DOM is text-first at every width; below 760 px the form stacks, the
+  photo and the create button become full-width, and the background grid goes to two columns and
+  then one. Nothing overflows horizontally at 1440, 1024 or 390 px.
+- **Accessibility.** Visible `:focus-visible` outlines, 44 px touch targets on small screens,
+  `prefers-reduced-motion` respected, labelled controls and live regions. No `innerHTML`.

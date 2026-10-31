@@ -17,6 +17,8 @@ export const REPOSITORY_ROOT = fileURLToPath(new URL('..', import.meta.url));
 
 const DEFAULT_LLM_API_BASE = 'https://api.deepseek.com';
 const DEFAULT_LLM_MODEL = 'deepseek-flash';
+const DEFAULT_IMAGE_API_BASE = 'https://openrouter.ai/api/v1';
+const DEFAULT_IMAGE_MODEL = 'krea/k3-edit';
 
 const DEFAULT_ORIGINS = [
   'http://localhost:8000',
@@ -59,17 +61,23 @@ function originList(value) {
  * @param {Record<string, string|undefined>} [env]
  */
 export function loadConfig(env = process.env) {
+  const onVercel = text(env.VERCEL) === '1' || text(env.VERCEL_ENV) !== null;
+  const dataSetting = text(env.CHATMT_DATA_DIR) ?? (onVercel ? '/tmp/chatmt-data' : 'data');
+  const cacheSetting =
+    text(env.CHATMT_IMAGE_CACHE_DIR) ??
+    (onVercel ? '/tmp/chatmt-background-cache' : path.join('data', 'background-cache'));
   const llmApiBase =
     text(env.CHATMT_LLM_API_BASE) ??
     text(env.DEEPSEEK_API_BASE) ??
     text(env.ZAI_API_BASE) ??
     DEFAULT_LLM_API_BASE;
   const llmApiKey = text(env.CHATMT_LLM_API_KEY) ?? text(env.DEEPSEEK_API_KEY) ?? text(env.ZAI_API_KEY);
+  const imageApiKey = text(env.OPENROUTER_API_KEY) ?? text(env.CHATMT_IMAGE_API_KEY);
 
   return Object.freeze({
     host: text(env.CHATMT_HOST) ?? '127.0.0.1',
     port: integer(env.PORT ?? env.CHATMT_PORT, 3080, { minimum: 0, maximum: 65535, name: 'PORT' }),
-    dataDir: path.resolve(REPOSITORY_ROOT, text(env.CHATMT_DATA_DIR) ?? 'data'),
+    dataDir: path.isAbsolute(dataSetting) ? dataSetting : path.resolve(REPOSITORY_ROOT, dataSetting),
     standardsDir: path.join(REPOSITORY_ROOT, 'standards'),
     // The interface is served by this server, so the page and the API share one origin and
     // there is nothing to configure in the browser. See backend/static-files.js.
@@ -96,6 +104,19 @@ export function loadConfig(env = process.env) {
         maximum: 80_000_000,
         name: 'CHATMT_MAX_IMAGE_PIXELS'
       })
+    }),
+    imageGeneration: Object.freeze({
+      apiBase: text(env.OPENROUTER_API_BASE) ?? DEFAULT_IMAGE_API_BASE,
+      apiKey: imageApiKey,
+      model:
+        text(env.OPENROUTER_IMAGE_MODEL) ?? text(env.CHATMT_IMAGE_MODEL) ?? DEFAULT_IMAGE_MODEL,
+      timeoutMs: integer(env.CHATMT_IMAGE_TIMEOUT_MS, 90_000, {
+        minimum: 1000,
+        maximum: 180_000,
+        name: 'CHATMT_IMAGE_TIMEOUT_MS'
+      }),
+      cacheDir: path.isAbsolute(cacheSetting) ? cacheSetting : path.resolve(REPOSITORY_ROOT, cacheSetting),
+      configured: Boolean(imageApiKey)
     }),
     llm: Object.freeze({
       apiBase: llmApiBase,

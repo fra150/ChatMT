@@ -355,8 +355,36 @@ test('the composition is deterministic and never chooses the colour', () => {
   assert.equal(first.choice.applied, true);
 });
 
-test('a red or yellow composition needs the recorded cogent reason', () => {
-  assert.throws(() => composeDesign({ meanings, colourName: 'red', design: { type: 'flyer' } }), /cogent reason/);
+test('the user text becomes the flyer copy, with the first line as the headline', () => {
+  const result = composeDesign({
+    meanings,
+    colourName: 'blue',
+    design: { type: 'flyer', text: 'Jazz night\nDoors 8pm · Town Hall' }
+  });
+  assert.equal(result.copy.headline, 'Jazz night');
+  assert.equal(result.copy.body, 'Doors 8pm · Town Hall');
+  assert.match(result.svg, /Jazz night/);
+  assert.match(result.svg, /Doors 8pm/);
+});
+
+test('a generated background is placed full-bleed in the showcase layout', () => {
+  const backgroundImage = 'data:image/jpeg;base64,/9j/4AAQSkZJRg==';
+  const result = composeDesign({
+    meanings,
+    colourName: 'green',
+    design: { type: 'flyer', text: 'Spring fair' },
+    backgroundImage
+  });
+  assert.equal(result.layout.id, 'showcase');
+  assert.match(result.svg, /data:image\/jpeg;base64/);
+  assert.match(result.svg, /Spring fair/);
+});
+
+test('red and yellow compose without a recorded cogent reason, with the reduced assistance', () => {
+  const result = composeDesign({ meanings, colourName: 'red', design: { type: 'flyer' } });
+  assert.equal(result.colour.colour_name, 'red');
+  assert.ok(result.warnings.some((line) => /not friendly/.test(line)));
+
   const unlocked = composeDesign({
     meanings,
     standing: { ...friendly(), allow_questioned_colours: true },

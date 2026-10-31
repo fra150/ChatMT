@@ -22,9 +22,12 @@ import { loadEnvFile } from './env-file.js';
 import { loadStandards } from './standards-loader.js';
 import { createFileAdapter, StorageError } from './storage/file-adapter.js';
 import { createLlmClassifier } from './llm-classifier.js';
+import { createOpenRouterImageClient, ImageGenerationError } from './openrouter-images.js';
 import { createInteractionService } from './services/interaction-service.js';
 import { createImageService } from './services/image-service.js';
 import { createComposeService } from './services/compose-service.js';
+import { createBackgroundImageService } from './services/background-image-service.js';
+import { createFlyerService } from './services/flyer-service.js';
 import { ApiError, badRequest, notFound } from './errors.js';
 import { readStaticFile } from './static-files.js';
 
@@ -107,7 +110,7 @@ function recordIdFrom(raw) {
 /**
  * @param {ReturnType<typeof loadConfig>} [config]
  */
-export function createServer(config = loadConfig()) {
+export function createRequestHandler(config = loadConfig()) {
   const standards = loadStandards({ directory: config.standardsDir });
   const adapter = createFileAdapter({ directory: config.dataDir });
   const llm = createLlmClassifier(config.llm);
@@ -124,6 +127,19 @@ export function createServer(config = loadConfig()) {
     palette: PALETTE,
     standingFor: (userId) => service.standingFor(userId).profile,
     images
+  });
+  const imageGenerator = createOpenRouterImageClient(config.imageGeneration);
+  const backgroundImages = createBackgroundImageService({
+    generator: imageGenerator,
+    images,
+    meanings: composition.meanings,
+    cacheDir: config.imageGeneration.cacheDir
+  });
+  const flyers = createFlyerService({
+    interactionService: service,
+    composeService: composition,
+    backgroundImages,
+    palette: PALETTE
   });
 
   const routes = [
@@ -142,6 +158,12 @@ export function createServer(config = loadConfig()) {
           model: llm.configured ? llm.model : null,
           thinking: llm.configured ? llm.thinking : null,
           reasoning_effort: llm.configured && llm.thinking === 'enabled' ? llm.reasoningEffort : null
+        },
+        imageGeneration: {
+          configured: imageGenerator.configured,
+          provider: imageGenerator.provider,
+          model: imageGenerator.configured ? imageGenerator.model : null,
+          cache: config.imageGeneration.cacheDir
         },
         storage: { type: 'json-file' },
         frontend: { served_at: '/frontend/' }
@@ -273,6 +295,33 @@ export function createServer(config = loadConfig()) {
           image: body.image ?? null,
           variant: body.variant
         })
+    },
+    {
+      method: 'POST',
+      pattern: /^\/api\/design\/flyer$/,
+      handler: async ({ body }) =>
+        flyers.create({
+          userId: userIdFrom(String(body.userId ?? '')),
+          text: body.text,
+          image: body.image ?? null,
+          consent: body.consent,
+          design: body.design ?? {}
+        })
+    },
+    {
+      method: 'POST',
+      pattern: /^\/api\/design\/recompose$/,
+      handler: async ({ body }) =>
+        flyers.recompose({
+          userId: userIdFrom(String(body.userId ?? '')),
+          text: body.text,
+          colourName: body.colourName ?? body.colour?.name,
+          image: body.image ?? null,
+          design: body.design ?? {},
+          backgroundId: body.backgroundId ?? null,
+          backgroundIndex: body.backgroundIndex,
+          count: body.count
+        })
     }
   ];
 
@@ -315,7 +364,13 @@ export function createServer(config = loadConfig()) {
     sendJson(res, 200, payload);
   }
 
-  const server = http.createServer((req, res) => {
+  return function chatmtHandler(req, res) {
+    // Vercel's catch-all function may receive the path without the /api prefix. The local
+    // http.createServer path always starts with /api, so the rewrite is scoped to Vercel.
+    if (process.env.VERCEL === '1' && typeof req.url === 'string' && !/^\/api(\/|$)/.test(req.url)) {
+      const suffix = req.url.startsWith('/') ? req.url : `/${req.url}`;
+      req.url = `/api${suffix}`;
+    }
     handle(req, res).catch((error) => {
       const mapped = mapError(error);
       if (mapped.status >= 500) {
@@ -327,12 +382,14 @@ export function createServer(config = loadConfig()) {
       }
       sendJson(res, mapped.status, { error: { code: mapped.code, message: mapped.message } });
     });
-  });
+  };
+}
 
+export function createServer(config = loadConfig()) {
+  const server = http.createServer(createRequestHandler(config));
   server.on('clientError', (_error, socket) => {
     if (socket.writable) socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n');
   });
-
   return server;
 }
 
@@ -356,6 +413,17 @@ function mapError(error) {
   }
   if (error instanceof UnsupportedInputError) {
     return new ApiError(400, 'unsupported_input', error.message);
+  }
+  if (error instanceof ImageGenerationError) {
+    const status =
+      error.code === 'image_not_configured'
+        ? 503
+        : error.code === 'image_timeout'
+          ? 504
+          : error.code === 'image_prompt_required'
+            ? 400
+            : 502;
+    return new ApiError(status, error.code, error.message);
   }
   if (error instanceof TypeError || error instanceof RangeError) {
     return new ApiError(400, 'invalid_request', error.message);

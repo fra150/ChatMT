@@ -166,7 +166,7 @@ export function normaliseDesignContext(design = {}) {
     height: DESIGN_TYPES[type].height,
     subject: optionalText(design?.subject, 'subject'),
     audience: optionalText(design?.audience, 'audience'),
-    text: optionalText(design?.text, 'text')
+    text: optionalText(design?.text, 'text', 800)
   });
 }
 

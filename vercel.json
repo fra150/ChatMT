@@ -1,0 +1,16 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "version": 2,
+  "outputDirectory": "frontend",
+  "rewrites": [
+    { "source": "/frontend", "destination": "/index.html" },
+    { "source": "/frontend/(.*)", "destination": "/$1" }
+  ],
+  "functions": {
+    "api/[...path].js": {
+      "maxDuration": 300,
+      "memory": 1024,
+      "includeFiles": "standards/**"
+    }
+  }
+}

@@ -101,6 +101,10 @@ const FONTS = Object.freeze({
 });
 
 export const COMPOSITION_LAYOUTS = Object.freeze({
+  showcase: {
+    label: 'generated background, text on the scrim',
+    for: 'the one-press flyer with a generated background'
+  },
   'band-right': {
     label: 'text band left, photo right',
     for: 'wide formats (banner, background)'
@@ -115,24 +119,47 @@ export const COMPOSITION_LAYOUTS = Object.freeze({
   }
 });
 
-function layoutFor(width, height) {
+function layoutFor(width, height, hasBackground = false) {
+  if (hasBackground) return 'showcase';
   const ratio = width / height;
   if (ratio >= 1.6) return 'band-right';
   if (ratio <= 0.95) return 'stack';
   return 'cover';
 }
 
+function splitUserText(text) {
+  const raw = String(text ?? '').trim();
+  if (raw === '') return null;
+  const lines = raw
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter((line) => line !== '');
+  if (lines.length > 1) {
+    return { headline: lines[0], body: lines.slice(1).join(' ') };
+  }
+  const sentences = raw.match(/[^.!?]+[.!?]?/g)?.map((sentence) => sentence.trim()).filter(Boolean) ?? [];
+  if (sentences.length > 1 && sentences[0].length <= 90) {
+    return { headline: sentences[0], body: sentences.slice(1).join(' ') };
+  }
+  return { headline: raw, body: '' };
+}
+
 function buildCopy({ colourName, entry, context }) {
   const meaningPhrase = entry.meanings.join(' or ');
-  const headline = context.subject ?? `${capitalise(colourName)} — ${meaningPhrase}`;
+  const userCopy = splitUserText(context.text);
+  const headline = userCopy?.headline ?? context.subject ?? `${capitalise(colourName)} — ${meaningPhrase}`;
   const subhead = context.audience === null ? null : `For ${context.audience}`;
-  const body = [
-    `${capitalise(colourName)} carries ${meaningPhrase}.`,
-    context.subject === null ? null : `${context.subject} is the subject, set in the colour you chose.`,
-    context.audience === null ? null : `It speaks to ${context.audience}.`
-  ]
-    .filter(Boolean)
-    .join(' ');
+  const body = userCopy
+    ? userCopy.body === ''
+      ? `${capitalise(colourName)} carries ${meaningPhrase}.`
+      : userCopy.body
+    : [
+        `${capitalise(colourName)} carries ${meaningPhrase}.`,
+        context.subject === null ? null : `${context.subject} is the subject, set in the colour you chose.`,
+        context.audience === null ? null : `It speaks to ${context.audience}.`
+      ]
+        .filter(Boolean)
+        .join(' ');
   return {
     kicker: `chatmt · ${context.label}`,
     headline,
@@ -207,7 +234,15 @@ function geometricField({ x, y, width, height, colour, id }) {
  * @param {{image: string, width: number, height: number}|null} [input.photo] a prepared photo
  * @param {number} [input.variant] rotates the composition among a few layouts
  */
-export function composeDesign({ meanings, standing = null, colourName, design, photo = null, variant = 0 } = {}) {
+export function composeDesign({
+  meanings,
+  standing = null,
+  colourName,
+  design,
+  photo = null,
+  backgroundImage = null,
+  variant = 0
+} = {}) {
   if (!meanings || typeof meanings.representationFor !== 'function') {
     throw new TypeError('composeDesign needs the colour meaning index.');
   }
@@ -217,15 +252,11 @@ export function composeDesign({ meanings, standing = null, colourName, design, p
   if (entry === null || entry === undefined) {
     throw new RangeError(`Unknown colour ${JSON.stringify(requested)}: it is not in the palette.`);
   }
-  if (meanings.isQuestioned(requested) && standing?.allow_questioned_colours !== true) {
-    throw new RangeError(
-      `A ${requested} background is composed only after a cogent reason for ${requested} was recorded.`
-    );
-  }
 
   const context = design?.width && design?.height ? design : normaliseDesignContext(design ?? {});
   const { width, height } = context;
-  const layoutId = layoutFor(width, height);
+  const hasBackground = typeof backgroundImage === 'string' && backgroundImage !== '';
+  const layoutId = layoutFor(width, height, hasBackground);
   const ink = inkFor(entry.hex);
   const copy = buildCopy({ colourName: requested, entry, context });
   const margin = round(Math.min(width, height) * 0.07);
@@ -237,7 +268,119 @@ export function composeDesign({ meanings, standing = null, colourName, design, p
 
   const parts = [];
 
-  if (layoutId === 'stack') {
+  if (layoutId === 'showcase') {
+    const background = hasBackground
+      ? photoLayer({ photo: { image: backgroundImage }, x: 0, y: 0, width, height, id: 'bg' })
+      : geometricField({ x: 0, y: 0, width, height, colour: entry.hex, id: 'bg' });
+    parts.push(background);
+    parts.push(
+      scrimLayer({
+        x: 0,
+        y: round(height * 0.42),
+        width,
+        height: round(height * 0.58),
+        colour: '#10161a',
+        id: 'showcase'
+      })
+    );
+
+    if (photo !== null) {
+      const insetX = margin;
+      const insetY = margin;
+      const insetW = width - margin * 2;
+      const insetH = round(height * 0.38);
+      parts.push(photoLayer({ photo, x: insetX, y: insetY, width: insetW, height: insetH, id: 'inset' }));
+      parts.push(
+        `<rect x="${insetX}" y="${insetY}" width="${insetW}" height="${insetH}" fill="none" ` +
+          `stroke="#fbf8f1" stroke-width="${Math.max(3, round(width * 0.006))}" opacity="0.92"/>`
+      );
+    }
+
+    const ink = '#fbf8f1';
+    const textTop = round(height * (photo === null ? 0.6 : 0.62));
+    const columnWidth = width - margin * 2;
+    const density =
+      copy.headline.length + copy.body.length > 420
+        ? 0.56
+        : copy.headline.length + copy.body.length > 260
+          ? 0.7
+          : copy.headline.length + copy.body.length > 150
+            ? 0.84
+            : 1;
+    const headlineSize = Math.max(34, round(Math.min(96, Math.min(width, height) * 0.085) * density));
+    let bodySize = Math.max(15, round(Math.min(30, headlineSize * 0.36)));
+    const kickerSize = Math.max(11, round(bodySize * 0.72));
+    const footerSize = kickerSize;
+    const headlineLines = wrap(copy.headline, Math.max(12, Math.floor(columnWidth / (headlineSize * 0.52))));
+    let bodyLines = wrap(copy.body, Math.max(20, Math.floor(columnWidth / (bodySize * 0.52))));
+    while (bodyLines.length > 8 && bodySize > 12) {
+      bodySize -= 1;
+      bodyLines = wrap(copy.body, Math.max(20, Math.floor(columnWidth / (bodySize * 0.52))));
+    }
+
+    parts.push(
+      textLines({
+        lines: [copy.kicker.toUpperCase()],
+        x: margin,
+        y: textTop,
+        lineHeight: kickerSize * 1.4,
+        size: kickerSize,
+        fill: ink,
+        font: FONTS.mono,
+        spacing: 2
+      })
+    );
+    parts.push(
+      textLines({
+        lines: headlineLines,
+        x: margin,
+        y: textTop + kickerSize * 2.1 + headlineSize,
+        lineHeight: round(headlineSize * 1.06),
+        size: headlineSize,
+        fill: ink,
+        font: FONTS.display
+      })
+    );
+    const afterHeadline =
+      textTop + kickerSize * 2.1 + headlineSize + (headlineLines.length - 1) * headlineSize * 1.06;
+    parts.push(
+      textLines({
+        lines: bodyLines,
+        x: margin,
+        y: afterHeadline + bodySize * 1.8,
+        lineHeight: round(bodySize * 1.45),
+        size: bodySize,
+        fill: ink,
+        font: FONTS.body
+      })
+    );
+    parts.push(
+      `<rect x="${margin}" y="${height - margin * 1.45}" width="${round(width - margin * 2)}" height="1" fill="${ink}" opacity="0.3"/>` +
+        textLines({
+          lines: [copy.footer],
+          x: margin,
+          y: height - margin,
+          lineHeight: footerSize * 1.3,
+          size: footerSize,
+          fill: ink,
+          font: FONTS.mono
+        })
+    );
+    parts.push(
+      `<rect x="${round(margin * 0.45)}" y="${round(margin * 0.45)}" width="${round(width - margin * 0.9)}" ` +
+        `height="${round(height - margin * 0.9)}" fill="none" stroke="${ink}" stroke-width="1.5" opacity="0.5"/>`
+    );
+
+    actions.push(
+      hasBackground
+        ? 'Generated background placed full-bleed; the text sits on a scrim for contrast.'
+        : 'No generated background was available: a colour field built from the chosen colour is used.',
+      photo !== null
+        ? 'Photo framed in the upper area with a clean border; the fit is automatic, no manual crop.'
+        : 'No photo sent: the flyer uses the generated background alone.',
+      'Headline and body wrapped automatically inside the safe margin.'
+    );
+  } else if (layoutId === 'stack') {
     const photoHeight = photo === null ? round(height * 0.46) : round(height * 0.58);
     const contentTop = photoHeight + margin;
     const columnWidth = width - margin * 2;
@@ -467,10 +610,14 @@ export function composeDesign({ meanings, standing = null, colourName, design, p
   });
 
   const warnings = [];
-  if (photo === null) warnings.push('No photo was sent: the frame uses a colour field instead.');
+  if (photo === null && !hasBackground) {
+    warnings.push('No photo or generated background was available: the frame uses a colour field instead.');
+  }
   if (meanings.isQuestioned(requested)) {
     warnings.push(
-      `The ${requested} background is composed because a cogent reason for ${requested} is recorded in the profile.`
+      standing?.allow_questioned_colours === true
+        ? `The ${requested} flyer uses the colour because a cogent reason for ${requested} is recorded in the profile.`
+        : `The ${requested} flyer is composed with the colour you chose. The profile is not friendly, so fewer background suggestions and the declared delay apply.`
     );
   }
 

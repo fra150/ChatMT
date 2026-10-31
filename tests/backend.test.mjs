@@ -37,9 +37,11 @@ before(async () => {
   dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'chatmt-backend-'));
   config = loadConfig({
     CHATMT_DATA_DIR: dataDir,
+    CHATMT_IMAGE_CACHE_DIR: path.join(dataDir, 'background-cache'),
     PORT: '0',
     CHATMT_LLM_API_BASE: '',
-    CHATMT_LLM_API_KEY: ''
+    CHATMT_LLM_API_KEY: '',
+    OPENROUTER_API_KEY: ''
   });
   server = createServer(config);
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -78,6 +80,7 @@ test('health, standards, palette and meanings are exposed', async () => {
   assert.equal(health.body.standards.usage.id, 'usage-of-colours');
   assert.equal(health.body.standards.meanings.id, 'colour-meanings');
   assert.equal(health.body.llm.configured, false);
+  assert.equal(health.body.imageGeneration.configured, false);
   assert.equal(health.body.storage.type, 'json-file');
 
   const meanings = await api('/api/meanings');
@@ -816,15 +819,20 @@ test('the interface is served by the same server, and only from the frontend dir
   assert.match(page.headers.get('content-type'), /text\/html/);
   const html = await page.text();
   assert.match(html, /ChatMT/);
-  assert.match(html, /id="background-ask"/);
+  assert.match(html, /id="flyer-text"/);
+  assert.match(html, /id="create-flyer"/);
 
-  const script = await fetch(`${base}/frontend/js/app.js`);
+  const studio = await fetch(`${base}/frontend/studio.html`);
+  assert.equal(studio.status, 200);
+  assert.match(await studio.text(), /id="background-ask"/);
+
+  const script = await fetch(`${base}/frontend/js/create.js`);
   assert.equal(script.status, 200);
   assert.match(script.headers.get('content-type'), /javascript/);
   const source = await script.text();
-  assert.match(source, /no innerHTML/);
+  assert.match(source, /no innerHTML/i);
 
-  const css = await fetch(`${base}/frontend/css/styles.css`);
+  const css = await fetch(`${base}/frontend/css/create.css`);
   assert.equal(css.status, 200);
   assert.match(css.headers.get('content-type'), /text\/css/);
 
@@ -1032,8 +1040,9 @@ test('the app composes a design from the chosen colour, the photo and the flyer 
     method: 'POST',
     body: { userId: 'compose-user', colour: { name: 'red' }, design: { type: 'flyer' } }
   });
-  assert.equal(questioned.status, 400);
-  assert.equal(questioned.body.error.code, 'background_not_questioned');
+  assert.equal(questioned.status, 200);
+  assert.equal(questioned.body.colour.colour_name, 'red');
+  assert.ok(questioned.body.warnings.some((line) => /not friendly/.test(line)));
 
   const unknown = await api('/api/design/compose', {
     method: 'POST',
@@ -1048,4 +1057,41 @@ test('the app composes a design from the chosen colour, the photo and the flyer 
   });
   assert.equal(notAnImage.status, 400);
   assert.equal(notAnImage.body.error.code, 'invalid_image');
+});
+
+test('the one-press flyer infers the colour and composes red/yellow without refusing it', async () => {
+  const green = await api('/api/design/flyer', {
+    method: 'POST',
+    body: { userId: 'flyer-user', text: 'A green flyer for a spring market', consent: true }
+  });
+  assert.equal(green.status, 200);
+  assert.equal(green.body.input.colourName, 'green');
+  assert.equal(green.body.tone, 'friendly');
+  assert.equal(green.body.backgrounds.images.length, 5);
+  assert.equal(green.body.backgrounds.configured, false);
+  assert.ok(green.body.backgrounds.notes.some((line) => /OPENROUTER_API_KEY/.test(line)));
+  assert.equal(green.body.composition.layout.id, 'showcase');
+  assert.match(green.body.composition.svg, /spring market/i);
+
+  const yellow = await api('/api/design/flyer', {
+    method: 'POST',
+    body: { userId: 'flyer-user-yellow', text: 'A yellow flyer', consent: true }
+  });
+  assert.equal(yellow.status, 200);
+  assert.equal(yellow.body.input.colourName, 'yellow');
+  assert.equal(yellow.body.tone, 'not_friendly');
+  assert.equal(yellow.body.display.delay_ms, 900);
+  assert.equal(yellow.body.backgrounds.images.length, 2);
+  assert.equal(yellow.body.composition.colour.colour_name, 'yellow');
+  assert.ok(yellow.body.composition.warnings.some((line) => /not friendly/.test(line)));
+
+  const next = await api('/api/design/flyer', {
+    method: 'POST',
+    body: { userId: 'flyer-user-yellow', text: 'A blue flyer for the same market', consent: true }
+  });
+  assert.equal(next.status, 200);
+  assert.ok(
+    next.body.standingMessages.some((message) => message.code === 'personal-reason-displeasure'),
+    'the next interaction carries the displeasure'
+  );
 });

@@ -122,7 +122,7 @@ export const COGENT_MARKERS = Object.freeze([
     id: 'audience',
     label: 'audience or market',
     weight: 2,
-    pattern: /\b(?:audience|customer|reader|viewer|target market|market|client)\b/
+    pattern: /\b(?:audience|customers?|readers?|viewers?|target market|market|clients?|students?|attendees?|guests?|public|community)\b/
   },
   {
     id: 'meaning',

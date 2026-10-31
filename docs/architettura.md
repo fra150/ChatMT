@@ -1,8 +1,8 @@
 # ChatMT — Architettura (Fase 2 e backend)
 
-- **Stato:** implementata e verificata (99 test automatici + 51 controlli nel browser)
-- **Data:** 26 ottobre 2026 (fase 2), 28 ottobre 2026 (backend), 29 ottobre 2026 (regole nuove, interfaccia sulle API, redesign “Ink Register” e passata di correzione)
-- **Ambito:** confronto di un colore scelto dalla tavolozza con i codici standard, memoria delle preferenze e delle correzioni, giudizio della ragione per rosso/giallo, profilo friendly/not_friendly con ritardo e displeasure ricorrente, suggerimenti grafici e sfondi richiesti, operazioni immagine, interfaccia servita dallo stesso server delle API e ridisegnata secondo il linguaggio “Ink Register”
+- **Stato:** implementata e verificata (114 test automatici + 62 controlli nel browser)
+- **Data:** 26 ottobre 2026 (fase 2), 28 ottobre 2026 (backend), 29 ottobre 2026 (regole nuove, interfaccia sulle API, redesign “Ink Register” e passata di correzione), 31 ottobre 2026 (composer semplice, sfondi generati, Vercel)
+- **Ambito:** confronto di un colore scelto dalla tavolozza con i codici standard, memoria delle preferenze e delle correzioni, giudizio della ragione per rosso/giallo, profilo friendly/not_friendly con ritardo e displeasure ricorrente, suggerimenti grafici e sfondi generati, operazioni immagine, composer “Create your flyer”, interfaccia servita dallo stesso server delle API e funzione serverless Vercel
 
 > Il §1 descrive la fase 2, che resta valida per i moduli e non è stata riscritta. Il backend
 > aggiunge i pezzi del §8 e sostituisce la decisione "nessun backend" del §4, che valeva per
@@ -218,11 +218,16 @@ viene dichiarato dal server (`display.delay_ms`) e solo applicato dal browser.
 | `modules/policy/design-suggestions.js` | sfondi deterministici tendenti ai cinque colori, e sfondi richiesti | `buildDesignSuggestions`, `buildRequestedBackgroundSuggestions`, `normaliseDesignContext`, `DESIGN_TYPES`, `BACKGROUND_STYLES` |
 | `modules/design/image-operations.js` | validazione delle operazioni | `parseOperations`, `assertCropFits`, `resolveResize`, `normaliseFormat`, `OUTPUT_FORMATS`, `IMAGE_LIMITS` |
 | `backend/llm-classifier.js` | seconda fase per le ragioni ambigue | `createLlmClassifier({apiBase, apiKey, model, timeoutMs})` → `configured`, `classify` |
-| `backend/services/interaction-service.js` | orchestra riflessione, politica, memoria, suggerimenti | `interact`, `requestBackground`, `suggestionsFor`, `savePreference`, `addCorrection`, `standingFor`, `memoryFor`, `deleteRecord`, `clearMemory` |
-| `backend/services/image-service.js` | crop, resize, rotate, conversione | `createImageService(limits)` → `transform` |
+| `backend/openrouter-images.js` | client image-to-image OpenRouter (`krea/k3-edit`) | `createOpenRouterImageClient({apiBase, apiKey, model, timeoutMs})` → `configured`, `generate({prompt, references})` |
+| `backend/services/background-image-service.js` | genera, prepara e cacha gli sfondi; fallback a gradienti | `createBackgroundImageService({generator, images, meanings, cacheDir})` → `generate`, `get`, `motifs` |
+| `backend/services/flyer-service.js` | inferisce colore e formato, orchestra interaction + sfondi + composizione | `createFlyerService(...)` → `create`, `recompose`; `inferColour`, `inferDesignType` |
+| `backend/services/interaction-service.js` | orchestra riflessione, politica, memoria, suggerimenti | `interact` (anche `undecidedAsPersonal`), `requestBackground`, `suggestionsFor`, `savePreference`, `addCorrection`, `standingFor`, `memoryFor`, `deleteRecord`, `clearMemory` |
+| `backend/services/image-service.js` | crop, resize, rotate, conversione | `createImageService(limits)` → `transform`, `prepare` |
 | `backend/storage/file-adapter.js` | adattatore sincrono su file con scritture atomiche | `createFileAdapter({directory})`, `fileNameForKey`, `StorageError` |
 | `backend/static-files.js` | serve l'interfaccia sulla stessa origine | `readStaticFile({root, urlPath})`, `resolveWithin(root, pathname)`, `contentTypeFor(file)`; MIME espliciti anche per `.ttf`, `.otf` e `.woff` |
-| `frontend/js/app.js` | solo interfaccia: nessun calcolo, nessun archivio | client HTTP verso `/api`, rendering del DOM con `textContent`, token di richiesta e specchio conversazionale |
+| `api/[...path].js` | entry point serverless Vercel, riusa `createRequestHandler` | handler `(req, res)` |
+| `frontend/js/create.js` | composer pubblico: testo, foto, creazione, sfondi | fetch verso `/api/design/flyer` e `/api/design/recompose`, rendering con `textContent` |
+| `frontend/js/app.js` | interfaccia dettagliata `studio.html`, mantenuta come reference | client HTTP verso `/api`, rendering del DOM con `textContent`, token di richiesta e specchio conversazionale |
 
 ### 8.3 Dati e categorie
 
@@ -335,3 +340,55 @@ La passata di correzione ha riguardato sei classi di difetti:
 
 Lo scroll della chat segue la conversazione solo quando il thread è già visibile, per non
 strappare la pagina via mentre si sceglie un colore.
+
+### 8.8 Il composer “Create your flyer” e gli sfondi generati (31 ottobre 2026)
+
+La pagina pubblica è stata ridotta a un solo composer: testo, foto opzionale, un pulsante. La
+pagina dettagliata resta in `frontend/studio.html` come reference e per i 51 controlli originali;
+la pagina pubblica è `frontend/index.html`. Le regole non sono più ripetute nell'interfaccia: il
+link in testata porta al repository GitHub.
+
+```
+POST /api/design/flyer
+  -> inferColour(testo)          primo nome di colore della palette, o blu
+  -> inferDesignType(testo)      flyer | poster | social_post | banner | background
+  -> interaction-service         stessa politica della palette, con undecidedAsPersonal
+  -> background-image-service    OpenRouter krea/k3-edit, cache, fallback
+  -> compose-service             SVG deterministico: sfondo, foto, testo
+  -> risposta                    composizione + profilo + sfondi + messaggi
+
+POST /api/design/recompose
+  -> stessi input + backgroundIndex/backgroundId
+  -> ricompone senza eseguire di nuovo l'interaction e senza scrivere nulla
+```
+
+Scelte registrate:
+
+- **Rosso e giallo non bloccano più la composizione.** Il composer produce comunque il flyer nel
+  colore scelto. Se la ragione non è cogente, l'interaction registra `not_friendly`: 2 sfondi
+  invece di 5, 900 ms di attesa e displeasure + spiegazione al prossimo ingaggio. La vecchia
+  porta `compose` che rifiutava rosso/giallo è stata rimossa; la richiesta esplicita di uno
+  sfondo rosso/giallo (`/api/design/backgrounds`) mantiene la sua domanda e la sua ragione
+  cogente.
+- **La ragione non è tutto il testo del flyer.** `flyer-service` rimuove i termini generici
+  dell'artefatto (`flyer`, `poster`, `banner`, `design`, `layout`, `background`, `theme`,
+  `branding`, `instagram`, `social post`) prima di classificare la ragione: altrimenti la parola
+  “flyer” renderebbe automaticamente cogente qualunque testo. Se dopo la rimozione non resta
+  nulla, la ragione è assente e quindi personale. `undecidedAsPersonal` trasforma un verdetto
+  `needs_review` in personale solo per questo flusso, così il flyer non si ferma.
+- **`krea/k3-edit` è image-to-image.** Richiede almeno un'immagine di riferimento. Il servizio
+  costruisce un canvas astratto con il colore scelto, due colori di supporto, una luce e un
+  orizzonte; il prompt chiede di trasformarlo in un giardino botanico, un villaggio, una cappella,
+  un prato o delle arcate. Il testo del flyer non viene mai inviato al provider.
+- **Cache.** La chiave è SHA-256 di modello + prompt + palette; l'immagine preparata (JPEG,
+  larghezza massima 1400 px) viene salvata in `data/background-cache/`. Scegliere un altro
+  sfondo ricompone senza una nuova generazione. Senza chiave o in caso di errore il servizio
+  restituisce gradienti deterministici con `fallback: true`.
+- **Composizione `showcase`.** Lo sfondo generato è full-bleed, il testo sta su uno scrim scuro,
+  la foto opzionale è incorniciata nella parte alta. Il testo dell'utente diventa la headline
+  (prima riga/frase) e il corpo (il resto), non più solo il significato del colore.
+- **Vercel.** `backend/server.js` espone `createRequestHandler`; `api/[...path].js` lo riusa come
+  funzione serverless e `vercel.json` serve `frontend/` come output statico e include
+  `standards/**` nel bundle della funzione. Su Vercel `dataDir` e `cacheDir` puntano a `/tmp`:
+  la memoria e la cache sono per istanza e volatili. `npm start` resta il percorso locale con
+  memoria su disco.

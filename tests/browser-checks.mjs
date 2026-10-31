@@ -11,7 +11,10 @@
  * data directory: there is nothing to start by hand.
  *
  *   node tests/browser-checks.mjs                        (starts its own server)
- *   node tests/browser-checks.mjs http://127.0.0.1:3080/frontend/index.html?user=manual
+ *   node tests/browser-checks.mjs http://127.0.0.1:3080/frontend/studio.html?user=manual
+ *
+ * The first 51 checks use the detailed studio page; the last 11 use the public composer at
+ * /frontend/index.html with the same server and a new user.
  *
  * Set CHROME_PATH if Chrome is not in a usual location.
  * These checks are not part of `npm test`: they need a browser.
@@ -73,7 +76,7 @@ async function startBackend() {
     dataDir,
     server,
     user,
-    app: `http://127.0.0.1:${port}/frontend/index.html?user=${user}`
+    app: `http://127.0.0.1:${port}/frontend/studio.html?user=${user}`
   };
 }
 
@@ -392,7 +395,59 @@ async function main() {
     await waitForValue("document.querySelector('#profile .badge').textContent", 'friendly');
     assert((await badge()) === 'friendly', 'without a stored profile the user is friendly again');
 
-    // ---- 10. no silent errors -----------------------------------------------------------
+    // ---- 10. the simple composer --------------------------------------------------------
+    const simpleApp = new URL(APP);
+    simpleApp.pathname = '/frontend/index.html';
+    simpleApp.searchParams.set('user', `simple-${Date.now()}`);
+    await client.send('Page.navigate', { url: simpleApp.toString() });
+    await waitForValue('document.readyState', 'complete');
+    await waitForValue("document.querySelectorAll('#flyer-text').length", 1);
+
+    assert((await count('#flyer-text')) === 1, 'the simple page has the text box');
+    assert((await count('#create-flyer')) === 1, 'the simple page has one create button');
+    assert((await text('.rules-link')).includes('Rules on GitHub'), 'the rules link is on the page');
+    assert((await hidden('#result')) === true, 'the result is hidden before the first creation');
+
+    await setValue('#flyer-text', 'A yellow flyer');
+    await click('#consent');
+    const simpleStartedAt = Date.now();
+    await click('#create-flyer');
+    await waitForText('#result-note', 'not cogent', 120000);
+    const simpleElapsed = Date.now() - simpleStartedAt;
+    assert(simpleElapsed >= 800, 'the simple page applies the declared delay', `${simpleElapsed} ms`);
+    assert(
+      (await text('#result-note')).includes('2 backgrounds instead of five'),
+      'the simple page shows the reduced assistance'
+    );
+    assert((await hidden('#flyer-preview')) === false, 'the flyer preview is visible');
+    await waitForValue("document.querySelectorAll('#suggestion-list .suggestion-card').length", 2);
+    assert(
+      (await count('#suggestion-list .suggestion-card')) === 2,
+      'the not friendly profile receives two backgrounds'
+    );
+    assert((await text('#result-meta')).includes('not friendly'), 'the tone is shown in the meta');
+
+    const previewBefore = await evaluate("document.querySelector('#flyer-preview').src");
+    await click('#suggestion-list .suggestion-card:nth-child(2)');
+    await waitForValue(
+      `document.querySelector('#flyer-preview').src !== ${JSON.stringify(previewBefore)}`,
+      true,
+      120000
+    );
+    assert(
+      (await text('#result-note')).includes('Background changed'),
+      'choosing a background recomposes the flyer'
+    );
+
+    // The first creation stored the profile; the second one delivers the pending messages.
+    await click('#create-flyer');
+    await waitForText('#standing-messages', 'not pleased', 120000);
+    assert(
+      (await hidden('#standing-section')) === false,
+      'the next engagement shows the standing note'
+    );
+
+    // ---- 11. no silent errors -----------------------------------------------------------
     assert(client.exceptions.length === 0, 'no uncaught exception in the browser', client.exceptions.join(' | '));
     const errors = client.consoleMessages.filter((entry) => entry.startsWith('error'));
     assert(errors.length === 0, 'no console error', errors.join(' | '));

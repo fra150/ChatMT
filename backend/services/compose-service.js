@@ -50,7 +50,7 @@ function resolveColour(palette, colour) {
  * @param {(userId: string) => object} options.standingFor the profile of one user
  * @param {object} options.images the image service, for prepare()
  */
-export function createComposeService({ meaningStandard, palette, standingFor, images }) {
+export function createComposeService({ meaningStandard, palette, standingFor, images, backgroundImages = null }) {
   if (!Array.isArray(palette) || palette.length === 0) throw new TypeError('The compose service needs the palette.');
   if (typeof standingFor !== 'function') throw new TypeError('The compose service needs a standing reader.');
   if (!images || typeof images.prepare !== 'function') {
@@ -59,46 +59,59 @@ export function createComposeService({ meaningStandard, palette, standingFor, im
 
   const meanings = createMeaningIndex(meaningStandard, { palette });
 
+  async function prepareImage(image) {
+    if (typeof image !== 'string' || image.trim() === '') return null;
+    return images.prepare({ image, maxWidth: MAX_PHOTO_WIDTH });
+  }
+
+  function svgDataUrl(svg) {
+    return `data:image/svg+xml;base64,${Buffer.from(String(svg), 'utf8').toString('base64')}`;
+  }
+
   /**
-   * @param {{userId: string, colour: object, design?: object, image?: string|null, variant?: number}} input
+   * @param {{userId: string, colour: object, design?: object, image?: string|null, photo?: object|null, background?: object|null, variant?: number}} input
    */
-  async function compose({ userId, colour, design, image = null, variant = 0 } = {}) {
+  async function compose({ userId, colour, design, image = null, photo = null, background = null, variant = 0 } = {}) {
     const entry = resolveColour(palette, colour);
     const standing = standingFor(userId);
 
-    // The gate for red and yellow is the recorded profile, not a parameter: a client that never
-    // asked the question cannot compose those backgrounds by passing a flag.
-    if (meanings.isQuestioned(entry.name) && standing?.allow_questioned_colours !== true) {
-      throw badRequest(
-        'background_not_questioned',
-        `A ${entry.name} background is composed only after a cogent reason for ${entry.name} was recorded. Ask for it first.`
-      );
-    }
-
-    const photo =
-      typeof image === 'string' && image.trim() !== ''
-        ? await images.prepare({ image, maxWidth: MAX_PHOTO_WIDTH })
-        : null;
+    const preparedPhoto = photo ?? (await prepareImage(image));
+    const backgroundRecord =
+      background === null || background === undefined
+        ? null
+        : {
+            id: background.id ?? null,
+            label: background.label ?? null,
+            fallback: background.fallback === true,
+            image:
+              typeof background.image === 'string' && background.image.startsWith('data:image/')
+                ? background.image
+                : typeof background.svg === 'string'
+                  ? svgDataUrl(background.svg)
+                  : null
+          };
 
     const result = composeDesign({
       meanings,
       standing,
       colourName: entry.name,
       design,
-      photo,
+      photo: preparedPhoto,
+      backgroundImage: backgroundRecord?.image ?? null,
       variant
     });
 
     return {
       ...result,
+      background: backgroundRecord,
       photo:
-        photo === null
+        preparedPhoto === null
           ? null
           : {
               ...result.photo,
-              source: photo.source,
-              resized: photo.resized,
-              bytes: photo.bytes,
+              source: preparedPhoto.source,
+              resized: preparedPhoto.resized,
+              bytes: preparedPhoto.bytes,
               treatment: 'cover-fit, centred, automatic: no manual crop'
             },
       stored: null,
@@ -106,5 +119,5 @@ export function createComposeService({ meaningStandard, palette, standingFor, im
     };
   }
 
-  return Object.freeze({ compose, meanings });
+  return Object.freeze({ compose, prepareImage, meanings });
 }

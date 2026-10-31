@@ -1,12 +1,13 @@
 # ChatMT — Backend (API, regole e limiti)
 
-- **Stato:** aggiornato e verificato il 29 ottobre 2026 (regole nuove del creatore, interfaccia
-  collegata alle API, redesign “Ink Register” e passata di correzione).
-- **Ambito:** backend e interfaccia. Il frontend non usa più `localStorage`: legge la tavolozza,
-  la risposta, il profilo, la memoria e i suggerimenti da queste API, che servono anche la pagina
-  sulla stessa origine. I font sono locali (`frontend/fonts/`) e non vengono richiesti a servizi
-  esterni.
-- **Test:** 108 test automatici superati, 51 controlli nel browser superati.
+- **Stato:** aggiornato e verificato il 31 ottobre 2026 (composer “Create your flyer”, sfondi
+  generati OpenRouter, entry point Vercel).
+- **Ambito:** backend e interfaccia. La pagina pubblica è un composer semplice; la pagina
+  dettagliata resta in `frontend/studio.html`. Il frontend non usa `localStorage`: legge la
+  risposta, il profilo, la memoria e gli sfondi da queste API, che servono anche la pagina sulla
+  stessa origine. I font sono locali (`frontend/fonts/`) e gli sfondi possono essere generati da
+  OpenRouter.
+- **Test:** 114 test automatici superati, 62 controlli nel browser superati.
 - **Linguaggio:** codice e identificativi in inglese, documentazione in italiano, come nel resto
   del progetto.
 
@@ -76,12 +77,17 @@ essere sostituito in silenzio.
 |---|---|---|
 | `PORT` o `CHATMT_PORT` | `3080` | porta HTTP (`0` = porta scelta dal sistema) |
 | `CHATMT_HOST` | `127.0.0.1` | interfaccia di ascolto |
-| `CHATMT_DATA_DIR` | `./data` | cartella dei profili JSON |
+| `CHATMT_DATA_DIR` | `./data` (`/tmp/chatmt-data` su Vercel) | cartella dei profili JSON |
+| `CHATMT_IMAGE_CACHE_DIR` | `./data/background-cache` (`/tmp/chatmt-background-cache` su Vercel) | cache delle immagini generate |
 | `CHATMT_ALLOWED_ORIGINS` | `http://localhost:8000`, `http://127.0.0.1:8000`, `http://localhost:8080`, `http://127.0.0.1:8080` | origini CORS ammesse; `*` ammette tutte |
 | `CHATMT_MAX_BODY_BYTES` | `12582912` (12 MiB) | limite del corpo JSON |
 | `CHATMT_MAX_IMAGE_BYTES` | `8388608` (8 MiB) | limite dell'immagine decodificata |
 | `CHATMT_MAX_IMAGE_DIMENSION` | `8000` | limite per lato dell'immagine |
 | `CHATMT_MAX_IMAGE_PIXELS` | `40000000` | limite dei pixel totali |
+| `OPENROUTER_API_BASE` | `https://openrouter.ai/api/v1` | endpoint Image API di OpenRouter |
+| `OPENROUTER_API_KEY` o `CHATMT_IMAGE_API_KEY` | assente | chiave OpenRouter, solo sul server; senza chiave si usano i gradienti di fallback |
+| `OPENROUTER_IMAGE_MODEL` o `CHATMT_IMAGE_MODEL` | `krea/k3-edit` | modello image-to-image; richiede 1–4 immagini di riferimento |
+| `CHATMT_IMAGE_TIMEOUT_MS` | `90000` | timeout di una generazione immagine |
 | `CHATMT_LLM_API_BASE`, `DEEPSEEK_API_BASE` o `ZAI_API_BASE` | `https://api.deepseek.com` | endpoint OpenAI-compatible, senza `/chat/completions` finale |
 | `CHATMT_LLM_API_KEY`, `DEEPSEEK_API_KEY` o `ZAI_API_KEY` | assente | chiave del modello, solo sul server |
 | `CHATMT_LLM_MODEL`, `DEEPSEEK_MODEL` o `ZAI_MODEL` | `deepseek-flash` | nome del modello |
@@ -90,6 +96,13 @@ essere sostituito in silenzio.
 | `CHATMT_LLM_TIMEOUT_MS` | `20000` | timeout della chiamata al modello (un modello che ragiona risponde in secondi) |
 
 La chiave non viene mai restituita dall'API, non viene scritta nei dati e non compare nei log.
+La chiave OpenRouter serve solo a generare gli sfondi: senza di essa le risposte continuano a
+funzionare con i gradienti di fallback. Il prompt inviato al modello contiene colore e motivo,
+non il testo del flyer.
+
+Su Vercel le stesse variabili vanno impostate nel progetto; `VERCEL=1` fa puntare
+`CHATMT_DATA_DIR` e `CHATMT_IMAGE_CACHE_DIR` a `/tmp`, quindi memoria e cache sono per istanza e
+volatili. Per una memoria duratura serve un adattatore esterno (Vercel KV, Postgres o Blob).
 
 All'avvio `npm start` legge `ChatMT/.env` (`backend/env-file.js`, nessuna dipendenza): un file
 `KEY=VALUE` con commenti, `export` opzionale e virgolette. Il file è ignorato da git; il template
@@ -218,7 +231,7 @@ Base: `http://127.0.0.1:3080`. Tutte le risposte sono JSON. Gli errori hanno la 
 
 | Metodo | Percorso | Scopo |
 |---|---|---|
-| GET | `/api/health` | stato, standard caricati, LLM configurato o no |
+| GET | `/api/health` | stato, standard caricati, LLM e image generation configurati o no |
 | GET | `/api/standards` | i due file standard completi |
 | GET | `/api/palette` | i 15 colori con copertura, significato, incoraggiato/equivalente/interrogato |
 | GET | `/api/meanings` | colori incoraggiati, equivalenti, rosso/giallo, numeri dell'assistenza, regole degli sfondi, colori senza significato, politiche e risposta alla domanda sul bias |
@@ -234,6 +247,8 @@ Base: `http://127.0.0.1:3080`. Tutte le risposte sono JSON. Gli errori hanno la 
 | POST | `/api/design/backgrounds` | richiesta di uno sfondo rosso o giallo |
 | POST | `/api/design/transform` | crop, resize, rotate, conversione |
 | POST | `/api/design/compose` | il design composto dall'app: foto impaginata, testi scritti, SVG |
+| POST | `/api/design/flyer` | composer one-press: testo + foto + colore inferito + sfondi + SVG |
+| POST | `/api/design/recompose` | ricompone con un altro sfondo, senza scrivere nulla |
 | GET | `/` e `/frontend/...` | l'interfaccia, sulla stessa origine |
 
 `userId` deve corrispondere a `[A-Za-z0-9_-]{1,64}`.
@@ -460,11 +475,12 @@ colore. La composizione è **deterministica**: stessi ingressi, stesso SVG.
 
 | Campo della risposta | Contenuto |
 |---|---|
-| `layout` | `id` (`stack`, `band-right`, `cover`), etichetta, margine di sicurezza |
-| `copy` | `kicker`, `headline`, `subhead`, `body`, `footer` scritti dall'app |
+| `layout` | `id` (`showcase`, `stack`, `band-right`, `cover`), etichetta, margine di sicurezza |
+| `copy` | `kicker`, `headline`, `subhead`, `body`, `footer`; se `design.text` è presente, la prima riga/frase diventa la headline e il resto il corpo |
+| `background` | `id`, `label`, `fallback`: lo sfondo generato usato dal composer, o `null` |
 | `photo` | dimensioni, `treatment: "cover-fit, centred, automatic"`, `resized`, byte; `null` senza foto |
 | `actions` | cosa ha fatto l'app, una riga per azione (foto adattata, scrim, testi mandati a capo) |
-| `warnings` | ciò che va dichiarato (nessuna foto, colore interrogato) |
+| `warnings` | ciò che va dichiarato (nessuna foto/sfondo, colore interrogato) |
 | `svg` / `svg_bytes` | il documento SVG e la sua dimensione |
 | `choice` | `by: "user"` — l'app compone, non sceglie il colore |
 
@@ -472,9 +488,13 @@ Regole:
 
 - il colore deve appartenere alla tavolozza (`unknown_colour` altrimenti) e avere un significato
   registrato per il testo;
-- rosso e giallo si compongono **solo** se il profilo salvato ha `allow_questioned_colours: true`,
-  cioè se una ragione cogente per quel colore è già registrata: la porta è il profilo, non un
-  parametro (`400 background_not_questioned`);
+- **rosso e giallo si compongono sempre**: la vecchia porta `background_not_questioned` è stata
+  rimossa il 31 ottobre. Se il profilo non ha una ragione cogente, il risultato contiene un
+  warning `not friendly`; il composer semplice applica comunque 2 sfondi, 900 ms e la displeasure
+  al prossimo ingaggio. La richiesta esplicita di uno sfondo rosso/giallo resta separata e
+  continua a richiedere la ragione cogente;
+- con uno sfondo generato il layout è `showcase`: immagine full-bleed, scrim, testo, foto
+  opzionale incorniciata;
 - la foto passa dagli stessi limiti di `/api/design/transform` (byte, lato, pixel) e viene
   riportata a un massimo di 1600 px di larghezza in JPEG, senza cambiarne le proporzioni;
 - nessun testo è scritto in memoria: `stored` è `null`.
@@ -482,16 +502,67 @@ Regole:
 L'SVG **non entra mai nel documento**: il frontend lo converte in un object URL e lo mostra in un
 `<img>`, con un link di download. La regola "niente `innerHTML`, niente SVG nel DOM" resta vera.
 
-### 6.8 Codici di errore
+### 6.8 `POST /api/design/flyer`
+
+Il composer pubblico. Richiesta:
+
+```json
+{
+  "userId": "local-user",
+  "text": "A yellow flyer for a road-safety warning. Headline: “Slow down.”",
+  "image": "data:image/png;base64,...",
+  "consent": true,
+  "design": {}
+}
+```
+
+- `text` è obbligatorio (1–800 caratteri): viene usato come copy del flyer e, per rosso/giallo,
+  come base della valutazione della ragione dopo la rimozione dei termini generici dell'artefatto
+  (`flyer`, `poster`, `banner`, `design`, `layout`, `background`, `theme`, `branding`, ecc.).
+- Il colore è il primo nome della palette nel testo (o un HEX), altrimenti `blue`; il formato è
+  inferito da `poster`, `banner`, `social`, `background`, altrimenti `flyer`.
+- Esegue l'interaction (quindi profilo, preferenza, delay e messaggi) e poi genera gli sfondi con
+  il limite dell'assistenza (`5`, `2` o `3`).
+- `undecidedAsPersonal` è attivo solo qui: una ragione che le regole non sanno decidere viene
+  trattata come personale, così il flyer non si blocca e il profilo diventa `not_friendly`.
+- La risposta contiene `input` (colore/hex/formato), `tone`, `profile`, `display.delay_ms`,
+  `standingMessages`, `answer`, `stored`, `backgrounds` (`configured`, `provider`, `model`,
+  `generated`, `fallback`, `notes`, `images`) e `composition`.
+- Gli sfondi sono immagini generate; se OpenRouter non è configurato o fallisce, `images[].fallback`
+  è `true` e `images[].svg` contiene il gradiente deterministico.
+
+### 6.9 `POST /api/design/recompose`
+
+Ricompone il flyer quando l'utente sceglie un altro sfondo. Non esegue l'interaction e non scrive
+nulla:
+
+```json
+{
+  "userId": "local-user",
+  "text": "A yellow flyer",
+  "colourName": "yellow",
+  "design": { "type": "flyer" },
+  "image": "data:image/png;base64,...",
+  "backgroundId": "…",
+  "backgroundIndex": 1,
+  "count": 2
+}
+```
+
+`backgroundId` è la chiave della cache; se manca, si usa `backgroundIndex` sulla lista rigenerata
+(le immagini sono in cache, quindi non si paga una nuova generazione). La risposta contiene
+`backgrounds` e `composition`.
 
 | Stato | Codici |
 |---|---|
-| 400 | `invalid_json`, `invalid_request`, `invalid_user_id`, `invalid_record_id`, `colour_required`, `unknown_colour`, `colour_mismatch`, `invalid_colour`, `invalid_consent`, `invalid_reason`, `reason_too_long`, `reason_required`, `reason_unclear`, `background_not_questioned`, `invalid_operation`, `too_many_operations`, `crop_out_of_bounds`, `invalid_format`, `invalid_image` |
+| 400 | `invalid_json`, `invalid_request`, `invalid_user_id`, `invalid_record_id`, `colour_required`, `unknown_colour`, `colour_mismatch`, `invalid_colour`, `invalid_consent`, `invalid_reason`, `reason_too_long`, `reason_required`, `reason_unclear`, `background_not_questioned`, `invalid_operation`, `too_many_operations`, `crop_out_of_bounds`, `invalid_format`, `invalid_image`, `text_required`, `text_too_long`, `image_prompt_required` |
 | 403 | `consent_required` |
 | 404 | `not_found`, `record_not_found` |
 | 405 | `method_not_allowed` |
 | 413 | `payload_too_large`, `image_too_large` |
-| 503 | `storage_unavailable` |
+| 502 | `image_provider_error`, `image_invalid_response` |
+| 503 | `storage_unavailable`, `image_not_configured` |
+| 504 | `image_timeout` |
 | 500 | `internal_error` |
 
 ---
@@ -588,10 +659,10 @@ Dichiarato per non promettere ciò che non è stato costruito:
 
 1. **Non fa autenticazione.** L'interfaccia è collegata, ma chiunque raggiunga il server può
    usare qualsiasi `userId` (vedi §9).
-2. **Non genera immagini con un modello.** I suggerimenti sono specifiche deterministiche
-   (CSS + SVG), non fotografie né rendering, e la composizione automatica (`/api/design/compose`)
-   impagina la foto caricata dall'utente e scrive i testi: non inventa né immagini né fotografie.
-   Non c'è un modello di image generation.
+2. **Non genera il flyer completo con un modello.** Genera lo **sfondo** con OpenRouter
+   (`krea/k3-edit`), ma il layout, il testo e la posizione della foto sono deterministici: la
+   composizione automatica (`/api/design/compose`) impagina la foto caricata e scrive i testi,
+   non inventa il flyer intero.
 3. **Non è un editor grafico completo.** Fa crop, resize, rotazione a quarti di giro e
    conversione png/jpeg/bmp. Non fa livelli, testi, filtri, maschere, webp o gif in uscita.
 4. **Non capisce il linguaggio.** Le regole lessicali non sono comprensione del testo; il
@@ -609,31 +680,37 @@ Dichiarato per non promettere ciò che non è stato costruito:
 
 ## 11. Test misurati
 
-Eseguiti il 29 ottobre 2026 su Windows, Node.js v26.5.0.
+Eseguiti il 31 ottobre 2026 su Windows, Node.js v26.5.0.
 
 | Comando | Risultato |
 |---|---|
-| `node tests/run-tests.mjs` | **108/108** test superati |
-| `node tests/browser-checks.mjs` | **51/51** controlli superati (lo script avvia da sé il backend) |
+| `node tests/run-tests.mjs` | **114/114** test superati |
+| `node tests/browser-checks.mjs` | **62/62** controlli superati (lo script avvia da sé il backend) |
 
-I test coprono in particolare, per le regole del 29 ottobre:
+I test coprono in particolare, per le regole del 29 ottobre e il composer del 31 ottobre:
 
 - `tests/reason-policy.test.mjs` — significati ed equivalenze (magenta/indigo, purple/violet),
   regole personali/cogenti, negazioni, casi ambigui, **ragione assente = personale**, ritorno a
   `friendly` con un colore incoraggiato, displeasure ricorrente, ritardo dichiarato;
 - `tests/design-suggestions.test.mjs` — 5 vs 2 suggerimenti, `delay_ms` 0 vs 900, solo colori
   incoraggiati, sfondo rosso/giallo richiesto e prodotto solo con ragione cogente,
-  `choice.by = "user"`, determinismo, validazione delle operazioni immagine;
-- `tests/backend.test.mjs` — server HTTP reale su porta effimera, health, tipi di design,
-  interazioni, ripristino del profilo con un colore incoraggiato, displeasure che si ripete,
-  richiesta di sfondo rosso/giallo (domanda, esito personale e cogente), interfaccia servita
-  dalla stessa origine con il rifiuto dei percorsi che escono da `frontend/`, font `.ttf` serviti
-  come `font/ttf` con `nosniff`, persistenza tra due istanze del server, isolamento tra utenti,
-  memoria e consenso, errori, LLM simulato, crop/resize/rotate e conversione png/jpeg/bmp;
+  `choice.by = "user"`, determinismo, testo utente come copy, layout `showcase`, composizione
+  rosso/giallo senza blocco, validazione delle operazioni immagine;
+- `tests/background-images.test.mjs` — prompt senza testo utente, immagine di riferimento,
+  preparazione JPEG, cache per modello+prompt+palette, fallback quando la chiave manca o il
+  provider fallisce;
+- `tests/backend.test.mjs` — server HTTP reale su porta effimera, health (incluso
+  `imageGeneration`), tipi di design, interazioni, ripristino del profilo con un colore
+  incoraggiato, displeasure che si ripete, richiesta di sfondo rosso/giallo (domanda, esito
+  personale e cogente), composer one-press con colore inferito, composizione rosso/giallo con
+  delay e 2 sfondi, interfaccia servita dalla stessa origine con il rifiuto dei percorsi che
+  escono da `frontend/`, font `.ttf` serviti come `font/ttf` con `nosniff`, persistenza tra due
+  istanze del server, isolamento tra utenti, memoria e consenso, errori, LLM simulato,
+  crop/resize/rotate e conversione png/jpeg/bmp;
 - `tests/memory.test.mjs` — i metodi generici usati dal backend per profilo e valutazioni.
 
 Non misurati: accuratezza del classificatore su dati reali, latenza sotto carico, consumo di
-risorse, e qualità dei suggerimenti grafici percepita da persone.
+risorse, qualità estetica degli sfondi generati e stabilità del provider OpenRouter.
 
 ---
 
@@ -642,7 +719,8 @@ risorse, e qualità dei suggerimenti grafici percepita da persone.
 1. Aggiungere autenticazione e autorizzazione per profilo prima di esporre il server.
 2. Costruire un insieme etichettato di ragioni per misurare precisione e richiamo delle regole
    e del modello.
-3. Aggiungere il download dei suggerimenti SVG nel frontend (oggi la pagina mostra il gradiente
-   CSS equivalente e cita il CSS, senza mai inserire l'SVG nel documento).
-4. Portare le operazioni immagine nell'interfaccia, oggi raggiungibili solo via API.
+3. Sostituire su Vercel la memoria su `/tmp` con Vercel KV, Postgres o Blob, così il profilo
+   sopravvive alle istanze serverless.
+4. Valutare la qualità estetica degli sfondi generati e misurare la latenza/costo di OpenRouter;
+   mantenere i gradienti di fallback come rete di sicurezza.
 5. Valutare un editor grafico più ampio come fase separata, con requisiti e test propri.

@@ -360,9 +360,9 @@ export function createInteractionService({
   }
 
   /**
-   * @param {{userId: string, colour: object, reason?: string, consent?: boolean, design?: object}} input
+   * @param {{userId: string, colour: object, reason?: string, consent?: boolean, design?: object, undecidedAsPersonal?: boolean}} input
    */
-  async function interact({ userId, colour, reason, consent, design } = {}) {
+  async function interact({ userId, colour, reason, consent, design, undecidedAsPersonal = false } = {}) {
     const colourEntry = resolveColour(colour);
     const reasonText = validateReason(reason);
     const consented = validateConsent(consent);
@@ -381,7 +381,21 @@ export function createInteractionService({
     const questioned = meanings.isQuestioned(colourEntry.name);
     // Only red and yellow carry a question, so only they produce an assessment; for the other
     // colours a reason is simply stored with the preference.
-    const assessment = questioned ? await decideReason(colourEntry, reasonText) : null;
+    let assessment = questioned ? await decideReason(colourEntry, reasonText) : null;
+    // The one-press flyer cannot stop to ask a second question: a reason that the declared rules
+    // cannot classify is treated as personal for that flow, so red and yellow still compose with
+    // the reduced assistance instead of being refused. The normal interaction keeps needs_review.
+    if (undecidedAsPersonal && assessment?.verdict === VERDICTS.NEEDS_REVIEW) {
+      assessment = {
+        ...assessment,
+        verdict: VERDICTS.PERSONAL,
+        method: 'undecided-as-personal',
+        explanation: [
+          ...(assessment.explanation ?? []),
+          'The flyer flow treats an undecided reason as personal: the colour still composes, with the reduced assistance.'
+        ]
+      };
+    }
     const verdict = verdictFor({ colourEntry, assessment });
 
     let applied = false;
