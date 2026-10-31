@@ -14,6 +14,7 @@
  */
 
 import http from 'node:http';
+import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -166,7 +167,10 @@ export function createRequestHandler(config = loadConfig()) {
           cache: config.imageGeneration.cacheDir
         },
         storage: { type: 'json-file' },
-        frontend: { served_at: '/frontend/' }
+        frontend: {
+          served_at: '/frontend/',
+          index: fs.existsSync(path.join(config.frontendDir, 'index.html'))
+        }
       })
     },
     {

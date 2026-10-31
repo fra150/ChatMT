@@ -14,7 +14,7 @@ for the palette, the answer, the profile, the memory and the background suggesti
 `localStorage` path any more, so what you see and what the server stored cannot diverge.
 
 _Last updated: 31 October 2026 — simple “Create your flyer” composer, generated backgrounds,
-OpenRouter image generation, Vercel entry point; 114 automated tests and 62 browser checks
+OpenRouter image generation, Vercel static + serverless deployment; 114 automated tests and 62 browser checks
 passing._
 
 ---
@@ -36,7 +36,7 @@ passing._
 | Simple “Create your flyer” composer: text + optional photo + one press | |
 | Generated backgrounds from OpenRouter (`krea/k3-edit`), with a cache and gradient fallback | |
 | Interface served by the backend on the same origin as the API | |
-| Vercel entry point (`api/[...path].js`) with ephemeral `/tmp` memory | |
+| Vercel deployment: static `frontend` + serverless `api/index.js` | |
 
 The measurement is a mathematical distance. It is **not** a statement about your taste: two
 colours can be very close without you liking both, and far apart while you like both. The
@@ -68,18 +68,20 @@ docker run --rm -p 8080:3080 chatmt
 # then open http://localhost:8080/
 ```
 
-**On Vercel** the same backend is exposed through `api/[...path].js`, and `vercel.json` serves
-the `frontend` directory as static files:
+**On Vercel** the `frontend` directory is served statically and `api/index.js` handles every
+`/api/*` request. The rewrite `/api/(.*) → /api/index` is necessary: Vercel's `api/[...path].js`
+catch-all only matches one level and returns 404 for nested paths. The Dockerfile remains for
+local/container use and is excluded from the Vercel upload by `.vercelignore`.
 
 ```bash
 vercel link
 vercel env add OPENROUTER_API_KEY     # paste the OpenRouter key
 vercel env add DEEPSEEK_API_KEY       # optional, for ambiguous reasons
-vercel deploy
+vercel deploy --prod
 ```
 
-The function bundle includes `standards/**`; the JSON memory and the background cache live in
-`/tmp` on Vercel, so they are per-instance and ephemeral. For durable memory on Vercel, replace
+In production `CHATMT_DATA_DIR=/tmp/chatmt-data`: the JSON memory and the background cache live
+in `/tmp`, so they are per-instance and ephemeral. For durable memory on Vercel, replace
 `backend/storage/file-adapter.js` with Vercel KV, Postgres or Blob.
 
 ## The interface
@@ -112,10 +114,10 @@ backend and linked from GitHub, not repeated in the interface.
 - **Accessibility in the ordinary path.** Visible `:focus-visible` outlines, 44 px touch targets on
   small screens, `prefers-reduced-motion` respected, labelled controls and live regions. No
   `innerHTML`.
-- **Vercel.** `api/[...path].js` exposes the same backend as a serverless function and
-  `vercel.json` serves the `frontend` directory. On Vercel the JSON memory and background cache
-  live in `/tmp`: they are per-instance and ephemeral. The local `npm start` server keeps them on
-  disk.
+- **Vercel.** `frontend` is served statically; `api/index.js` is the serverless handler for every
+  `/api/*` request, reached through the rewrite `/api/(.*) → /api/index`. In production
+  `CHATMT_DATA_DIR=/tmp/chatmt-data`: the JSON memory and background cache are per-instance and
+  ephemeral.
 
 The design notes are in `docs/design-philosophy.md`; the deployment notes are in
 `docs/backend-api.md`.
@@ -323,12 +325,13 @@ ChatMT/
 ├── frontend/             the interface: API client, HTML, CSS, local fonts
 │   ├── index.html        the simple “Create your flyer” page
 │   ├── studio.html       the detailed reference page kept for the original checks
+│   ├── favicon.svg       the public favicon
 │   ├── css/create.css    the public composer styles
 │   ├── css/styles.css    the studio styles
 │   ├── fonts/            Gloock, Instrument Sans, Geist Mono + OFL licences
 │   ├── js/create.js      the public composer
 │   └── js/app.js         the studio client
-├── api/[...path].js      Vercel serverless entry point for /api/*
+├── api/index.js          Vercel serverless handler for /api/* (via rewrite)
 ├── modules/
 │   ├── color_engine/     colour space conversions, CIEDE2000, palette
 │   ├── design/           image operations, composer
@@ -340,8 +343,9 @@ ChatMT/
 ├── standards/            the standard codes and the colour meanings
 ├── tests/                unit tests, backend integration tests, browser checks
 ├── docs/                 architecture, API, tests, design philosophy, phase 1 analysis
-├── Dockerfile            Node image running the backend, which serves the page
-├── vercel.json           static frontend + /api function + standards in the bundle
+├── Dockerfile            local/container image; excluded from the Vercel upload
+├── vercel.json           static frontend, /api rewrite, function bundle
+├── .vercelignore         keeps the Dockerfile out of the Vercel build
 └── package.json          ES modules, one dependency (jimp), start and test scripts
 ```
 

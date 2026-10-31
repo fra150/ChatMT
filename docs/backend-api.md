@@ -102,7 +102,9 @@ non il testo del flyer.
 
 Su Vercel le stesse variabili vanno impostate nel progetto; `VERCEL=1` fa puntare
 `CHATMT_DATA_DIR` e `CHATMT_IMAGE_CACHE_DIR` a `/tmp`, quindi memoria e cache sono per istanza e
-volatili. Per una memoria duratura serve un adattatore esterno (Vercel KV, Postgres o Blob).
+volatili. Il frontend è servito staticamente e `api/index.js` gestisce `/api/*` tramite il
+rewrite `/api/(.*) → /api/index`; il catch-all `api/[...path].js` non copre le rotte annidate su
+Vercel. Per una memoria duratura serve un adattatore esterno (Vercel KV, Postgres o Blob).
 
 All'avvio `npm start` legge `ChatMT/.env` (`backend/env-file.js`, nessuna dipendenza): un file
 `KEY=VALUE` con commenti, `export` opzionale e virgolette. Il file è ignorato da git; il template

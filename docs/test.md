@@ -294,7 +294,8 @@ docker run -d --name chatmt-verify -p 8180:3080 chatmt:verify
 
 La suite attuale è di 62 controlli: i nuovi 11 sul composer pubblico non sono stati rieseguiti
 nel container in questa passata. Il container è stato verificato con la pagina dettagliata e con
-le API; il percorso serverless è coperto da `api/[...path].js` e da `vercel.json`.
+le API. Il deploy Vercel usa invece il frontend statico + `api/index.js`; il rewrite
+`/api/(.*) → /api/index` evita il limite del catch-all, che copriva solo un livello.
 
 Il container avvia il backend e serve API e interfaccia insieme, sulla porta 3080 e sulla stessa
 origine; la memoria è nel volume `/data`.

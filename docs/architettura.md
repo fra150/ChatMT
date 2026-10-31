@@ -2,7 +2,7 @@
 
 - **Stato:** implementata e verificata (114 test automatici + 62 controlli nel browser)
 - **Data:** 26 ottobre 2026 (fase 2), 28 ottobre 2026 (backend), 29 ottobre 2026 (regole nuove, interfaccia sulle API, redesign “Ink Register” e passata di correzione), 31 ottobre 2026 (composer semplice, sfondi generati, Vercel)
-- **Ambito:** confronto di un colore scelto dalla tavolozza con i codici standard, memoria delle preferenze e delle correzioni, giudizio della ragione per rosso/giallo, profilo friendly/not_friendly con ritardo e displeasure ricorrente, suggerimenti grafici e sfondi generati, operazioni immagine, composer “Create your flyer”, interfaccia servita dallo stesso server delle API e funzione serverless Vercel
+- **Ambito:** confronto di un colore scelto dalla tavolozza con i codici standard, memoria delle preferenze e delle correzioni, giudizio della ragione per rosso/giallo, profilo friendly/not_friendly con ritardo e displeasure ricorrente, suggerimenti grafici e sfondi generati, operazioni immagine, composer “Create your flyer”, interfaccia servita dallo stesso server delle API e deploy Vercel static + serverless
 
 > Il §1 descrive la fase 2, che resta valida per i moduli e non è stata riscritta. Il backend
 > aggiunge i pezzi del §8 e sostituisce la decisione "nessun backend" del §4, che valeva per
@@ -225,8 +225,8 @@ viene dichiarato dal server (`display.delay_ms`) e solo applicato dal browser.
 | `backend/services/image-service.js` | crop, resize, rotate, conversione | `createImageService(limits)` → `transform`, `prepare` |
 | `backend/storage/file-adapter.js` | adattatore sincrono su file con scritture atomiche | `createFileAdapter({directory})`, `fileNameForKey`, `StorageError` |
 | `backend/static-files.js` | serve l'interfaccia sulla stessa origine | `readStaticFile({root, urlPath})`, `resolveWithin(root, pathname)`, `contentTypeFor(file)`; MIME espliciti anche per `.ttf`, `.otf` e `.woff` |
-| `api/[...path].js` | entry point serverless Vercel, riusa `createRequestHandler` | handler `(req, res)` |
 | `frontend/js/create.js` | composer pubblico: testo, foto, creazione, sfondi | fetch verso `/api/design/flyer` e `/api/design/recompose`, rendering con `textContent` |
+| `api/index.js` | handler serverless Vercel, riusa `createRequestHandler`; il rewrite manda `/api/*` qui | handler `(req, res)` |
 | `frontend/js/app.js` | interfaccia dettagliata `studio.html`, mantenuta come reference | client HTTP verso `/api`, rendering del DOM con `textContent`, token di richiesta e specchio conversazionale |
 
 ### 8.3 Dati e categorie
@@ -387,8 +387,8 @@ Scelte registrate:
 - **Composizione `showcase`.** Lo sfondo generato è full-bleed, il testo sta su uno scrim scuro,
   la foto opzionale è incorniciata nella parte alta. Il testo dell'utente diventa la headline
   (prima riga/frase) e il corpo (il resto), non più solo il significato del colore.
-- **Vercel.** `backend/server.js` espone `createRequestHandler`; `api/[...path].js` lo riusa come
-  funzione serverless e `vercel.json` serve `frontend/` come output statico e include
-  `standards/**` nel bundle della funzione. Su Vercel `dataDir` e `cacheDir` puntano a `/tmp`:
-  la memoria e la cache sono per istanza e volatili. `npm start` resta il percorso locale con
-  memoria su disco.
+- **Vercel.** `frontend/` è servito staticamente; `api/index.js` è l'handler serverless per ogni
+  richiesta `/api/*`, raggiunto con il rewrite `/api/(.*) → /api/index`. Il catch-all
+  `api/[...path].js` non è affidabile: su Vercel copre solo un livello e le rotte annidate
+  tornano 404. In produzione `CHATMT_DATA_DIR=/tmp/chatmt-data`: memoria e cache sono per istanza
+  e volatili. Il Dockerfile resta per l'uso locale/container ed è escluso da `.vercelignore`.
