@@ -1,8 +1,8 @@
 # ChatMT — Architettura (Fase 2 e backend)
 
 - **Stato:** implementata e verificata (114 test automatici + 62 controlli nel browser)
-- **Data:** 26 ottobre 2026 (fase 2), 28 ottobre 2026 (backend), 29 ottobre 2026 (regole nuove, interfaccia sulle API, redesign “Ink Register” e passata di correzione), 31 ottobre 2026 (composer semplice, sfondi generati, Vercel)
-- **Ambito:** confronto di un colore scelto dalla tavolozza con i codici standard, memoria delle preferenze e delle correzioni, giudizio della ragione per rosso/giallo, profilo friendly/not_friendly con ritardo e displeasure ricorrente, suggerimenti grafici e sfondi generati, operazioni immagine, composer “Create your flyer”, interfaccia servita dallo stesso server delle API e deploy Vercel static + serverless
+- **Data:** 26 ottobre 2026 (fase 2), 28 ottobre 2026 (backend), 29 ottobre 2026 (regole nuove, interfaccia sulle API, redesign “Ink Register” e passata di correzione), 31 ottobre 2026 (composer semplice, sfondi generati, ritaglio del soggetto, Vercel)
+- **Ambito:** confronto di un colore scelto dalla tavolozza con i codici standard, memoria delle preferenze e delle correzioni, giudizio della ragione per rosso/giallo, profilo friendly/not_friendly con ritardo e displeasure ricorrente, suggerimenti grafici e sfondi generati, operazioni immagine, composer “Create your flyer” con rimozione dello sfondo della foto e compositing del soggetto, interfaccia servita dallo stesso server delle API e deploy Vercel static + serverless
 
 > Il §1 descrive la fase 2, che resta valida per i moduli e non è stata riscritta. Il backend
 > aggiunge i pezzi del §8 e sostituisce la decisione "nessun backend" del §4, che valeva per
@@ -217,6 +217,10 @@ viene dichiarato dal server (`display.delay_ms`) e solo applicato dal browser.
 | `modules/policy/standing-engine.js` | transizioni del profilo e messaggi differiti | `createDefaultStanding`, `normaliseStanding`, `applyDecision`, `applyAssessment`, `DECISION_VERDICTS`, `collectEngagementMessages`, `assistanceFor`, `summaryOf` |
 | `modules/policy/design-suggestions.js` | sfondi deterministici tendenti ai cinque colori, e sfondi richiesti | `buildDesignSuggestions`, `buildRequestedBackgroundSuggestions`, `normaliseDesignContext`, `DESIGN_TYPES`, `BACKGROUND_STYLES` |
 | `modules/design/image-operations.js` | validazione delle operazioni | `parseOperations`, `assertCropFits`, `resolveResize`, `normaliseFormat`, `OUTPUT_FORMATS`, `IMAGE_LIMITS` |
+| `modules/design/subject-placement.js` | costanti e matematica della posizione del soggetto nello sfondo | `SUBJECT_BOX`, `subjectPlacement({width, height, subject})` |
+| `modules/design/raster-composer.js` | impasta il soggetto ritagliato nello sfondo e restituisce un solo JPEG | `compositeSubject({backgroundImage, subjectImage, width, height, subjectWidth, subjectHeight})`, `isRasterImageDataUrl` |
+| `backend/services/cutout-service.js` | rimuove lo sfondo della foto con GrabCut locale, cache e ripiego | `createCutoutService({cacheDir, workWidth})` → `removeBackground({image})`, `algorithm` |
+| `backend/services/compose-service.js` | prepara la foto, richiede il ritaglio e orchestra il compositing | `createComposeService({meaningStandard, palette, standingFor, images, cutouts})` → `compose`, `prepareImage`, `prepareCutout`, `meanings` |
 | `backend/llm-classifier.js` | seconda fase per le ragioni ambigue | `createLlmClassifier({apiBase, apiKey, model, timeoutMs})` → `configured`, `classify` |
 | `backend/openrouter-images.js` | client image-to-image OpenRouter (`krea/k3-edit`) | `createOpenRouterImageClient({apiBase, apiKey, model, timeoutMs})` → `configured`, `generate({prompt, references})` |
 | `backend/services/background-image-service.js` | genera, prepara e cacha gli sfondi; fallback a gradienti | `createBackgroundImageService({generator, images, meanings, cacheDir})` → `generate`, `get`, `motifs` |
@@ -354,7 +358,7 @@ POST /api/design/flyer
   -> inferDesignType(testo)      flyer | poster | social_post | banner | background
   -> interaction-service         stessa politica della palette, con undecidedAsPersonal
   -> background-image-service    OpenRouter krea/k3-edit, cache, fallback
-  -> compose-service             SVG deterministico: sfondo, foto, testo
+  -> compose-service             ritaglio GrabCut + compositing raster + SVG deterministico
   -> risposta                    composizione + profilo + sfondi + messaggi
 
 POST /api/design/recompose
@@ -384,11 +388,23 @@ Scelte registrate:
   larghezza massima 1400 px) viene salvata in `data/background-cache/`. Scegliere un altro
   sfondo ricompone senza una nuova generazione. Senza chiave o in caso di errore il servizio
   restituisce gradienti deterministici con `fallback: true`.
-- **Composizione `showcase`.** Lo sfondo generato è full-bleed, il testo sta su uno scrim scuro,
-  la foto opzionale è incorniciata nella parte alta. Il testo dell'utente diventa la headline
-  (prima riga/frase) e il corpo (il resto), non più solo il significato del colore.
+- **Composizione `showcase`.** Lo sfondo generato è full-bleed, il testo sta su uno scrim scuro.
+  Il testo dell'utente diventa la headline (prima riga/frase) e il corpo (il resto), non più solo
+  il significato del colore.
+- **Rimozione dello sfondo e soggetto composto.** Se c'è una foto e lo sfondo è raster, il
+  servizio di ritaglio esegue GrabCut in locale su una copia larga 400 px (5 iterazioni, ~1–2 s),
+  riempie i buchi interni, rimuove le macchie isolate e riporta la maschera alla foto prepared,
+  sfumandone il bordo. Il bbox viene scalato dalle coordinate di lavoro a quelle della foto: senza
+  questa scalatura si tagliava solo una striscia del soggetto. Il soggetto viene poi disegnato
+  nello sfondo con un'ombra morbida e una sfumatura in basso; l'SVG contiene un solo JPEG, non un
+  ritaglio sovrapposto. Se GrabCut non trova un soggetto separabile, il composer usa la vecchia
+  cornice invece di produrre un ritaglio rotto. La cache del ritaglio è SHA-256 dell'immagine
+  prepared + versione dell'algoritmo (`grabcut-v2`).
 - **Vercel.** `frontend/` è servito staticamente; `api/index.js` è l'handler serverless per ogni
   richiesta `/api/*`, raggiunto con il rewrite `/api/(.*) → /api/index`. Il catch-all
   `api/[...path].js` non è affidabile: su Vercel copre solo un livello e le rotte annidate
   tornano 404. In produzione `CHATMT_DATA_DIR=/tmp/chatmt-data`: memoria e cache sono per istanza
   e volatili. Il Dockerfile resta per l'uso locale/container ed è escluso da `.vercelignore`.
+  `@techstark/opencv-js` è una dipendenza npm caricata in modo lazy al primo ritaglio: il primo
+  flyer con foto dopo un cold start paga il caricamento, i successivi no; anche la cache del
+  ritaglio vive in `/tmp` ed è per istanza.

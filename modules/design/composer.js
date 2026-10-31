@@ -187,14 +187,24 @@ function photoLayer({ photo, x, y, width, height, id }) {
   );
 }
 
-function scrimLayer({ x, y, width, height, colour, direction = 'vertical', id }) {
-  const [x1, y1, x2, y2] =
-    direction === 'vertical' ? [0, y, 0, y + height] : [x, 0, x + width, 0];
+function scrimLayer({ x, y, width, height, colour, direction = 'vertical', id, stops = null }) {
+  const list =
+    Array.isArray(stops) && stops.length > 0
+      ? stops
+      : [
+          { offset: 0, opacity: 0 },
+          { offset: 1, opacity: 0.94 }
+        ];
+  const [x1, y1, x2, y2] = direction === 'vertical' ? [0, y, 0, y + height] : [x, 0, x + width, 0];
   return (
     `<defs><linearGradient id="scrim-${id}" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" ` +
     `gradientUnits="userSpaceOnUse">` +
-    `<stop offset="0%" stop-color="${colour}" stop-opacity="0"/>` +
-    `<stop offset="100%" stop-color="${colour}" stop-opacity="0.94"/>` +
+    list
+      .map(
+        (stop) =>
+          `<stop offset="${round(stop.offset * 100)}%" stop-color="${colour}" stop-opacity="${stop.opacity}"/>`
+      )
+      .join('') +
     `</linearGradient></defs>` +
     `<rect x="${x}" y="${y}" width="${width}" height="${height}" fill="url(#scrim-${id})"/>`
   );
@@ -240,6 +250,7 @@ export function composeDesign({
   colourName,
   design,
   photo = null,
+  subject = null,
   backgroundImage = null,
   variant = 0
 } = {}) {
@@ -269,22 +280,34 @@ export function composeDesign({
   const parts = [];
 
   if (layoutId === 'showcase') {
+    const hasSubject = subject !== null && subject.composited === true;
     const background = hasBackground
       ? photoLayer({ photo: { image: backgroundImage }, x: 0, y: 0, width, height, id: 'bg' })
       : geometricField({ x: 0, y: 0, width, height, colour: entry.hex, id: 'bg' });
     parts.push(background);
+
+    const scrimTop = round(height * (hasSubject ? 0.48 : 0.42));
     parts.push(
       scrimLayer({
         x: 0,
-        y: round(height * 0.42),
+        y: scrimTop,
         width,
-        height: round(height * 0.58),
+        height: height - scrimTop,
         colour: '#10161a',
-        id: 'showcase'
+        id: 'showcase',
+        stops: hasSubject
+          ? [
+              { offset: 0, opacity: 0 },
+              { offset: 0.2, opacity: 0.25 },
+              { offset: 0.4, opacity: 0.7 },
+              { offset: 0.55, opacity: 0.92 },
+              { offset: 1, opacity: 0.96 }
+            ]
+          : null
       })
     );
 
-    if (photo !== null) {
+    if (photo !== null && !hasSubject) {
       const insetX = margin;
       const insetY = margin;
       const insetW = width - margin * 2;
@@ -297,7 +320,9 @@ export function composeDesign({
     }
 
     const ink = '#fbf8f1';
-    const textTop = round(height * (photo === null ? 0.6 : 0.62));
+    const textTop = hasSubject
+      ? Math.max(round(height * 0.62), round(subject.bottom + height * 0.025))
+      : round(height * (photo === null ? 0.6 : 0.62));
     const columnWidth = width - margin * 2;
     const density =
       copy.headline.length + copy.body.length > 420
@@ -307,14 +332,27 @@ export function composeDesign({
           : copy.headline.length + copy.body.length > 150
             ? 0.84
             : 1;
-    const headlineSize = Math.max(34, round(Math.min(96, Math.min(width, height) * 0.085) * density));
+    let headlineSize = Math.max(34, round(Math.min(96, Math.min(width, height) * 0.085) * density));
     let bodySize = Math.max(15, round(Math.min(30, headlineSize * 0.36)));
     const kickerSize = Math.max(11, round(bodySize * 0.72));
     const footerSize = kickerSize;
-    const headlineLines = wrap(copy.headline, Math.max(12, Math.floor(columnWidth / (headlineSize * 0.52))));
+    const ruleY = height - margin * 1.45;
+    const available = ruleY - textTop;
+    let headlineLines = wrap(copy.headline, Math.max(12, Math.floor(columnWidth / (headlineSize * 0.52))));
     let bodyLines = wrap(copy.body, Math.max(20, Math.floor(columnWidth / (bodySize * 0.52))));
-    while (bodyLines.length > 8 && bodySize > 12) {
-      bodySize -= 1;
+
+    const blockHeight = () =>
+      kickerSize * 2.1 +
+      headlineSize +
+      (headlineLines.length - 1) * headlineSize * 1.06 +
+      bodySize * 1.8 +
+      (bodyLines.length - 1) * bodySize * 1.45 +
+      bodySize * 0.4;
+
+    while (headlineSize > 36 && blockHeight() > available) {
+      headlineSize -= 2;
+      bodySize = Math.max(13, round(headlineSize * 0.36));
+      headlineLines = wrap(copy.headline, Math.max(12, Math.floor(columnWidth / (headlineSize * 0.52))));
       bodyLines = wrap(copy.body, Math.max(20, Math.floor(columnWidth / (bodySize * 0.52))));
     }
 
@@ -330,24 +368,25 @@ export function composeDesign({
         spacing: 2
       })
     );
+    const headlineTop = textTop + kickerSize * 2.1 + headlineSize;
     parts.push(
       textLines({
         lines: headlineLines,
         x: margin,
-        y: textTop + kickerSize * 2.1 + headlineSize,
+        y: headlineTop,
         lineHeight: round(headlineSize * 1.06),
         size: headlineSize,
         fill: ink,
         font: FONTS.display
       })
     );
-    const afterHeadline =
-      textTop + kickerSize * 2.1 + headlineSize + (headlineLines.length - 1) * headlineSize * 1.06;
+    const afterHeadline = headlineTop + (headlineLines.length - 1) * headlineSize * 1.06;
+    const bodyTop = afterHeadline + bodySize * 1.8;
     parts.push(
       textLines({
         lines: bodyLines,
         x: margin,
-        y: afterHeadline + bodySize * 1.8,
+        y: bodyTop,
         lineHeight: round(bodySize * 1.45),
         size: bodySize,
         fill: ink,
@@ -355,7 +394,7 @@ export function composeDesign({
       })
     );
     parts.push(
-      `<rect x="${margin}" y="${height - margin * 1.45}" width="${round(width - margin * 2)}" height="1" fill="${ink}" opacity="0.3"/>` +
+      `<rect x="${margin}" y="${round(ruleY)}" width="${round(width - margin * 2)}" height="1" fill="${ink}" opacity="0.3"/>` +
         textLines({
           lines: [copy.footer],
           x: margin,
@@ -372,13 +411,17 @@ export function composeDesign({
     );
 
     actions.push(
-      hasBackground
-        ? 'Generated background placed full-bleed; the text sits on a scrim for contrast.'
-        : 'No generated background was available: a colour field built from the chosen colour is used.',
-      photo !== null
-        ? 'Photo framed in the upper area with a clean border; the fit is automatic, no manual crop.'
-        : 'No photo sent: the flyer uses the generated background alone.',
-      'Headline and body wrapped automatically inside the safe margin.'
+      hasSubject
+        ? 'The photo background was removed and the subject is fixed into the generated background, with no frame.'
+        : hasBackground
+          ? 'Generated background placed full-bleed; the text sits on a scrim for contrast.'
+          : 'No generated background was available: a colour field built from the chosen colour is used.',
+      hasSubject
+        ? 'The subject is anchored above the text area and its lower edge fades into the scrim.'
+        : photo !== null
+          ? 'Photo framed in the upper area with a clean border; the fit is automatic, no manual crop.'
+          : 'No photo sent: the flyer uses the generated background alone.',
+      `Headline and body wrapped automatically inside the safe margin (${headlineLines.length} headline line${headlineLines.length === 1 ? '' : 's'}).`
     );
   } else if (layoutId === 'stack') {
     const photoHeight = photo === null ? round(height * 0.46) : round(height * 0.58);
@@ -654,6 +697,19 @@ export function composeDesign({
       photo === null
         ? null
         : { width: photo.width, height: photo.height, treatment: 'cover-fit, centred, automatic' },
+    subject:
+      subject === null || subject.composited !== true
+        ? null
+        : {
+            composited: true,
+            method: subject.method ?? null,
+            width: subject.width,
+            height: subject.height,
+            x: subject.x,
+            y: subject.y,
+            bottom: subject.bottom,
+            foreground_ratio: subject.foreground_ratio ?? null
+          },
     actions,
     warnings,
     svg,

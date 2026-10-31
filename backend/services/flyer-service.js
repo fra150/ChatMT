@@ -176,12 +176,18 @@ export function createFlyerService({ interactionService, composeService, backgro
       count
     });
     const background = backgrounds.images[0] ?? null;
+    // The cut-out costs a couple of seconds, so it is only computed once a raster background
+    // exists: a gradient fallback keeps the framed photo treatment instead.
+    const photoForComposition =
+      typeof background?.image === 'string' && background.image.startsWith('data:image/')
+        ? await composeService.prepareCutout(preparedPhoto)
+        : preparedPhoto;
 
     const composition = await composeService.compose({
       userId,
       colour: { name: colour.entry.name },
       design: context,
-      photo: preparedPhoto,
+      photo: photoForComposition,
       background,
       variant: 0
     });
@@ -247,11 +253,16 @@ export function createFlyerService({ interactionService, composeService, backgro
       background = backgrounds.images[index] ?? backgrounds.images[0] ?? null;
     }
 
+    const photoForComposition =
+      typeof background?.image === 'string' && background.image.startsWith('data:image/')
+        ? await composeService.prepareCutout(preparedPhoto)
+        : preparedPhoto;
+
     const composition = await composeService.compose({
       userId,
       colour: { name: entry.name },
       design: context,
-      photo: preparedPhoto,
+      photo: photoForComposition,
       background,
       variant: 0
     });

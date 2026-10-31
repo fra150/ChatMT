@@ -18,6 +18,8 @@ import { loadConfig } from '../backend/config.js';
 import { createServer } from '../backend/server.js';
 import { loadStandards } from '../backend/standards-loader.js';
 import { createInteractionService } from '../backend/services/interaction-service.js';
+import { createComposeService } from '../backend/services/compose-service.js';
+import { createCutoutService } from '../backend/services/cutout-service.js';
 import { createLlmClassifier, LlmError } from '../backend/llm-classifier.js';
 import { loadEnvFile, parseEnvFile } from '../backend/env-file.js';
 import { MemoryStore, createVolatileAdapter } from '../modules/memory/memory-store.js';
@@ -1095,3 +1097,125 @@ test('the one-press flyer infers the colour and composes red/yellow without refu
     'the next interaction carries the displeasure'
   );
 });
+
+test('the cut-out removes the original background and keeps the subject opaque', async () => {
+  const service = createCutoutService();
+  const result = await service.removeBackground({ image: await portraitPhotoDataUrl() });
+  assert.equal(result.ok, true);
+  assert.equal(result.method, 'grabcut');
+  assert.ok(result.width >= 40 && result.height >= 40, 'the cut-out is cropped to the subject');
+  assert.ok(result.width >= 300, 'the bounding box is scaled back to the prepared photo');
+  assert.ok(result.foreground_ratio > 0.05 && result.foreground_ratio < 0.95);
+
+  const cut = await Jimp.read(Buffer.from(result.image.split(',')[1], 'base64'));
+  let transparent = 0;
+  let opaque = 0;
+  for (let index = 3; index < cut.bitmap.data.length; index += 4) {
+    if (cut.bitmap.data[index] === 0) transparent++;
+    else if (cut.bitmap.data[index] > 240) opaque++;
+  }
+  const total = cut.bitmap.width * cut.bitmap.height;
+  assert.ok(transparent > total * 0.1, 'the original background became transparent');
+  assert.ok(opaque > total * 0.1, 'the subject kept its own pixels');
+});
+
+test('a cut-out subject is baked into the generated background without a framed inset', async () => {
+  const meanings = loadStandards({ directory: MEANINGS_DIRECTORY }).meanings;
+  const background = new Jimp({ width: 300, height: 400, color: 0x2f5d50ff });
+  const backgroundUrl = `data:image/jpeg;base64,${(await background.getBuffer('image/jpeg', { quality: 86 })).toString('base64')}`;
+  const subject = await subjectPngDataUrl();
+  const prepared = {
+    image: await portraitPhotoDataUrl(),
+    width: 120,
+    height: 160,
+    source: 'image/png',
+    resized: false,
+    bytes: 1,
+    cutout: { ok: true, image: subject, width: 120, height: 160, method: 'grabcut', foreground_ratio: 0.3 }
+  };
+
+  const compose = createComposeService({
+    meaningStandard: meanings,
+    palette: PALETTE,
+    standingFor: () => ({ allow_questioned_colours: false }),
+    images: { prepare: async () => prepared },
+    cutouts: null
+  });
+
+  const result = await compose.compose({
+    userId: 'composite-user',
+    colour: { name: 'green' },
+    design: { type: 'flyer' },
+    photo: prepared,
+    background: { id: 'test-background', label: 'botanical garden', fallback: false, image: backgroundUrl }
+  });
+
+  assert.equal(result.subject.composited, true);
+  assert.equal(result.subject.method, 'grabcut');
+  assert.equal(result.photo.treatment, 'background removed, subject composited into the generated background');
+  assert.equal(result.background.image, null, 'the composite is not sent twice');
+  assert.equal((result.svg.match(/data:image\//g) ?? []).length, 1, 'the SVG holds one picture, not a cut-out layer');
+  assert.equal(result.svg.includes('photo-inset'), false, 'no framed photo rectangle is drawn');
+  assert.equal(result.svg.includes('photo-bg'), true);
+  assert.ok(result.actions.some((line) => /no frame/.test(line)));
+  assert.ok(result.svg_bytes > 1000);
+});
+
+test('only red and yellow produce a question; every other colour stays question-free', async () => {
+  for (const entry of PALETTE) {
+    const response = await api('/api/interactions', {
+      method: 'POST',
+      body: { userId: `question-guard-${entry.name}`, colour: { name: entry.name }, consent: false }
+    });
+    assert.equal(response.status, 200);
+    const questioned = entry.name === 'red' || entry.name === 'yellow';
+    assert.equal(
+      response.body.answer.needsClarification,
+      questioned,
+      `${entry.name}: needsClarification should be ${questioned}`
+    );
+    assert.equal(
+      response.body.answer.question === null,
+      !questioned,
+      `${entry.name}: question should be ${questioned ? 'present' : 'absent'}`
+    );
+    assert.equal(
+      response.body.reasonAssessment === null,
+      !questioned,
+      `${entry.name}: reasonAssessment should be ${questioned ? 'present' : 'absent'}`
+    );
+  }
+});
+
+async function portraitPhotoDataUrl() {
+  const width = 640;
+  const height = 840;
+  const image = new Jimp({ width, height, color: 0xdde7f0ff });
+  for (let y = 180; y < 360; y++) {
+    for (let x = 240; x < 400; x++) {
+      const dx = x - 320;
+      const dy = y - 270;
+      if (dx * dx + dy * dy < 76 * 76) image.setPixelColor(0x3a2b22ff, x, y);
+    }
+  }
+  for (let y = 360; y < 720; y++) {
+    const half = 160 + ((y - 360) / 360) * 60;
+    for (let x = 160; x < 480; x++) {
+      if (Math.abs(x - 320) < half) image.setPixelColor(0x3a2b22ff, x, y);
+    }
+  }
+  const buffer = await image.getBuffer('image/jpeg', { quality: 90 });
+  return `data:image/jpeg;base64,${buffer.toString('base64')}`;
+}
+
+async function subjectPngDataUrl() {
+  const image = new Jimp({ width: 120, height: 160, color: 0x00000000 });
+  for (let y = 20; y < 150; y++) {
+    const half = 20 + ((y - 20) / 130) * 30;
+    for (let x = 60 - half; x < 60 + half; x++) {
+      image.setPixelColor(0x3a2b22ff, x, y);
+    }
+  }
+  const buffer = await image.getBuffer('image/png');
+  return `data:image/png;base64,${buffer.toString('base64')}`;
+}

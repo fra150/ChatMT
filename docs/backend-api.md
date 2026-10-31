@@ -479,8 +479,9 @@ colore. La composizione è **deterministica**: stessi ingressi, stesso SVG.
 |---|---|
 | `layout` | `id` (`showcase`, `stack`, `band-right`, `cover`), etichetta, margine di sicurezza |
 | `copy` | `kicker`, `headline`, `subhead`, `body`, `footer`; se `design.text` è presente, la prima riga/frase diventa la headline e il resto il corpo |
-| `background` | `id`, `label`, `fallback`: lo sfondo generato usato dal composer, o `null` |
-| `photo` | dimensioni, `treatment: "cover-fit, centred, automatic"`, `resized`, byte; `null` senza foto |
+| `background` | `id`, `label`, `fallback`: lo sfondo generato usato dal composer, o `null`; con un soggetto composto contiene anche `composite: true` e `image: null` (l'immagine è già dentro l'SVG) |
+| `photo` | dimensioni, `treatment`, `resized`, byte, `cutout` (`method`, dimensioni, `foreground_ratio`) e `cutout_reason`; `null` senza foto |
+| `subject` | presente solo quando il ritaglio è riuscito: `composited: true`, `method`, posizione (`x`, `y`, `bottom`) e dimensioni nel flyer |
 | `actions` | cosa ha fatto l'app, una riga per azione (foto adattata, scrim, testi mandati a capo) |
 | `warnings` | ciò che va dichiarato (nessuna foto/sfondo, colore interrogato) |
 | `svg` / `svg_bytes` | il documento SVG e la sua dimensione |
@@ -495,10 +496,16 @@ Regole:
   warning `not friendly`; il composer semplice applica comunque 2 sfondi, 900 ms e la displeasure
   al prossimo ingaggio. La richiesta esplicita di uno sfondo rosso/giallo resta separata e
   continua a richiedere la ragione cogente;
-- con uno sfondo generato il layout è `showcase`: immagine full-bleed, scrim, testo, foto
-  opzionale incorniciata;
+- con uno sfondo generato il layout è `showcase`: immagine full-bleed, scrim, testo; se c'è anche
+  una foto, lo sfondo originale viene rimosso con GrabCut e il soggetto viene impastato
+  nell'immagine dello sfondo (nessuna cornice, nessun riquadro). L'immagine risultante è un solo
+  JPEG dentro l'SVG;
 - la foto passa dagli stessi limiti di `/api/design/transform` (byte, lato, pixel) e viene
   riportata a un massimo di 1600 px di larghezza in JPEG, senza cambiarne le proporzioni;
+- il ritaglio gira in locale con OpenCV (`400 px` di lavoro, 5 iterazioni): richiede circa 1–2
+  secondi, non consuma crediti del provider e non ridisegna i pixel del soggetto. Se non trova un
+  soggetto separabile (`cutout_reason: "no_subject"` / `"no_background"`), il composer torna alla
+  foto incorniciata invece di produrre un ritaglio rotto;
 - nessun testo è scritto in memoria: `stored` è `null`.
 
 L'SVG **non entra mai nel documento**: il frontend lo converte in un object URL e lo mostra in un
@@ -527,6 +534,12 @@ Il composer pubblico. Richiesta:
   il limite dell'assistenza (`5`, `2` o `3`).
 - `undecidedAsPersonal` è attivo solo qui: una ragione che le regole non sanno decidere viene
   trattata come personale, così il flyer non si blocca e il profilo diventa `not_friendly`.
+- **Solo rosso e giallo producono una domanda**: per gli altri colori `answer.question` è `null`
+  e `reasonAssessment` è `null`, anche quando il testo non contiene una ragione.
+- Se c'è una foto e lo sfondo scelto è un'immagine raster, `composition.subject.composited` è
+  `true`: lo sfondo della foto è stato rimosso e il soggetto è dentro lo sfondo generato. Se il
+  ritaglio non è possibile, `composition.photo.treatment` resta `cover-fit` e la foto è
+  incorniciata come prima.
 - La risposta contiene `input` (colore/hex/formato), `tone`, `profile`, `display.delay_ms`,
   `standingMessages`, `answer`, `stored`, `backgrounds` (`configured`, `provider`, `model`,
   `generated`, `fallback`, `notes`, `images`) e `composition`.

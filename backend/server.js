@@ -27,6 +27,7 @@ import { createOpenRouterImageClient, ImageGenerationError } from './openrouter-
 import { createInteractionService } from './services/interaction-service.js';
 import { createImageService } from './services/image-service.js';
 import { createComposeService } from './services/compose-service.js';
+import { createCutoutService } from './services/cutout-service.js';
 import { createBackgroundImageService } from './services/background-image-service.js';
 import { createFlyerService } from './services/flyer-service.js';
 import { ApiError, badRequest, notFound } from './errors.js';
@@ -123,11 +124,13 @@ export function createRequestHandler(config = loadConfig()) {
     llm
   });
   const images = createImageService(config.image);
+  const cutouts = createCutoutService({ cacheDir: path.join(config.dataDir, 'cutout-cache') });
   const composition = createComposeService({
     meaningStandard: standards.meanings,
     palette: PALETTE,
     standingFor: (userId) => service.standingFor(userId).profile,
-    images
+    images,
+    cutouts
   });
   const imageGenerator = createOpenRouterImageClient(config.imageGeneration);
   const backgroundImages = createBackgroundImageService({

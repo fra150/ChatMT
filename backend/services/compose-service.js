@@ -6,10 +6,16 @@
  * composed SVG. The rules stay where they were: the colour comes from the palette, the meaning
  * from the standard file, and the permission for a questioned colour from the stored profile,
  * never from a flag in the request.
+ *
+ * When a generated background and a photo are both present, the photo is cut out and painted
+ * into the background before the SVG is written. The flyer therefore contains one picture, not
+ * a framed photo placed on top of a picture.
  */
 
 import { createMeaningIndex } from '../../modules/meaning/colour-meanings.js';
 import { composeDesign } from '../../modules/design/composer.js';
+import { compositeSubject, isRasterImageDataUrl } from '../../modules/design/raster-composer.js';
+import { normaliseDesignContext } from '../../modules/policy/design-suggestions.js';
 import { badRequest } from '../errors.js';
 
 const MAX_PHOTO_WIDTH = 1600;
@@ -49,8 +55,16 @@ function resolveColour(palette, colour) {
  * @param {ReadonlyArray<object>} options.palette
  * @param {(userId: string) => object} options.standingFor the profile of one user
  * @param {object} options.images the image service, for prepare()
+ * @param {object|null} [options.cutouts] the cut-out service, for removeBackground()
  */
-export function createComposeService({ meaningStandard, palette, standingFor, images, backgroundImages = null }) {
+export function createComposeService({
+  meaningStandard,
+  palette,
+  standingFor,
+  images,
+  cutouts = null,
+  backgroundImages = null
+}) {
   if (!Array.isArray(palette) || palette.length === 0) throw new TypeError('The compose service needs the palette.');
   if (typeof standingFor !== 'function') throw new TypeError('The compose service needs a standing reader.');
   if (!images || typeof images.prepare !== 'function') {
@@ -59,9 +73,25 @@ export function createComposeService({ meaningStandard, palette, standingFor, im
 
   const meanings = createMeaningIndex(meaningStandard, { palette });
 
-  async function prepareImage(image) {
+  async function prepareImage(image, { cutout = false } = {}) {
     if (typeof image !== 'string' || image.trim() === '') return null;
-    return images.prepare({ image, maxWidth: MAX_PHOTO_WIDTH });
+    const prepared = await images.prepare({ image, maxWidth: MAX_PHOTO_WIDTH });
+    if (!cutout || cutouts === null) return prepared;
+    return prepareCutout(prepared);
+  }
+
+  async function prepareCutout(prepared) {
+    if (prepared === null || prepared === undefined || cutouts === null) return prepared ?? null;
+    try {
+      const result = await cutouts.removeBackground({ image: prepared.image });
+      return {
+        ...prepared,
+        cutout: result.ok === true ? result : null,
+        cutout_reason: result.ok === true ? null : result.reason
+      };
+    } catch (error) {
+      return { ...prepared, cutout: null, cutout_reason: error?.code ?? 'cutout_failed' };
+    }
   }
 
   function svgDataUrl(svg) {
@@ -74,9 +104,12 @@ export function createComposeService({ meaningStandard, palette, standingFor, im
   async function compose({ userId, colour, design, image = null, photo = null, background = null, variant = 0 } = {}) {
     const entry = resolveColour(palette, colour);
     const standing = standingFor(userId);
+    const context = design?.width && design?.height ? design : normaliseDesignContext(design ?? {});
 
-    const preparedPhoto = photo ?? (await prepareImage(image));
-    const backgroundRecord =
+    const preparedPhoto =
+      photo ?? (await prepareImage(image, { cutout: background !== null && background !== undefined }));
+
+    let backgroundRecord =
       background === null || background === undefined
         ? null
         : {
@@ -91,33 +124,88 @@ export function createComposeService({ meaningStandard, palette, standingFor, im
                   : null
           };
 
+    let backgroundImage = backgroundRecord?.image ?? null;
+    let subject = null;
+
+    if (preparedPhoto?.cutout && backgroundImage !== null && isRasterImageDataUrl(backgroundImage)) {
+      try {
+        const raster = await compositeSubject({
+          backgroundImage,
+          subjectImage: preparedPhoto.cutout.image,
+          width: context.width,
+          height: context.height,
+          subjectWidth: preparedPhoto.cutout.width,
+          subjectHeight: preparedPhoto.cutout.height
+        });
+        backgroundImage = raster.image;
+        backgroundRecord = { ...backgroundRecord, image: raster.image, composite: true };
+        subject = {
+          composited: true,
+          method: preparedPhoto.cutout.method,
+          width: raster.subject.width,
+          height: raster.subject.height,
+          x: raster.subject.x,
+          y: raster.subject.y,
+          bottom: raster.subject.bottom,
+          foreground_ratio: preparedPhoto.cutout.foreground_ratio ?? null
+        };
+      } catch {
+        // A background that cannot be decoded (for example an SVG fallback) keeps the framed
+        // photo treatment: a broken composite would be worse than a clean frame.
+        subject = null;
+      }
+    }
+
     const result = composeDesign({
       meanings,
       standing,
       colourName: entry.name,
-      design,
-      photo: preparedPhoto,
-      backgroundImage: backgroundRecord?.image ?? null,
+      design: context,
+      photo: subject === null ? preparedPhoto : null,
+      subject,
+      backgroundImage,
       variant
     });
 
     return {
       ...result,
-      background: backgroundRecord,
+      background:
+        backgroundRecord === null
+          ? null
+          : {
+              ...backgroundRecord,
+              // The composite is already inside the SVG; sending it again would double the
+              // response for no benefit.
+              image: backgroundRecord.composite === true ? null : backgroundRecord.image
+            },
       photo:
         preparedPhoto === null
           ? null
           : {
-              ...result.photo,
+              width: preparedPhoto.width,
+              height: preparedPhoto.height,
               source: preparedPhoto.source,
               resized: preparedPhoto.resized,
               bytes: preparedPhoto.bytes,
-              treatment: 'cover-fit, centred, automatic: no manual crop'
+              cutout:
+                preparedPhoto.cutout === null || preparedPhoto.cutout === undefined
+                  ? null
+                  : {
+                      method: preparedPhoto.cutout.method,
+                      width: preparedPhoto.cutout.width,
+                      height: preparedPhoto.cutout.height,
+                      foreground_ratio: preparedPhoto.cutout.foreground_ratio ?? null
+                    },
+              cutout_reason: preparedPhoto.cutout_reason ?? null,
+              treatment:
+                subject !== null
+                  ? 'background removed, subject composited into the generated background'
+                  : 'cover-fit, centred, automatic: no manual crop'
             },
       stored: null,
       note: 'Nothing is written by a composition: it is a design produced from data already chosen.'
     };
   }
 
-  return Object.freeze({ compose, prepareImage, meanings });
+  return Object.freeze({ compose, prepareImage, prepareCutout, meanings });
 }
